@@ -16,7 +16,7 @@ mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
 let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
-let trayMenu, petScene, petDrag, saveBoundsTimer;
+let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
@@ -55,7 +55,7 @@ function guardNavigation(win, getPort) {
   win.webContents.on("will-redirect", check);
 }
 
-function showManager(port = selectedPort || ownPort) {
+function showManager(port = selectedPort || ownPort, viewer = false) {
   if (!manager || manager.isDestroyed()) {
     manager = new BrowserWindow({
       width: 1050, height: 750, minWidth: 600, minHeight: 440,
@@ -67,9 +67,11 @@ function showManager(port = selectedPort || ownPort) {
       if (!quitting) { event.preventDefault(); manager.hide(); }
     });
   }
-  if (managerPort !== port || !manager.webContents.getURL()) {
+  const url = base(port) + (viewer ? "/?viewerex=1" : "/");
+  const current = manager.webContents.getURL();
+  if (managerPort !== port || !current || (viewer && current !== url)) {
     managerPort = port;
-    manager.loadURL(base(port)).catch(() => {});
+    manager.loadURL(url).catch(() => {});
   }
   manager.show();
   manager.focus();
@@ -215,6 +217,40 @@ function showTrayMenu(bounds) {
   popup.loadFile(path.join(__dirname, "tray-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
 }
 
+function showViewerMenu() {
+  if (viewerMenu && !viewerMenu.isDestroyed()) { viewerMenu.focus(); return; }
+  const cursor = screen.getCursorScreenPoint();
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+  const width = 192, height = 206;
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, cursor.x + 8));
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, cursor.y + 8));
+  const popup = new BrowserWindow({
+    x, y, width, height, show: false, frame: false, resizable: false, skipTaskbar: true,
+    alwaysOnTop: true, transparent: true, backgroundColor: "#00000000",
+    webPreferences: { ...windowOptions, preload: path.join(__dirname, "viewer-menu-preload.cjs") },
+  });
+  viewerMenu = popup;
+  popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  popup.webContents.on("will-navigate", (event) => event.preventDefault());
+  popup.on("blur", () => popup.close());
+  popup.on("closed", () => { viewerMenu = null; });
+  popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
+  popup.loadFile(path.join(__dirname, "viewer-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
+}
+
+async function viewerRequest(route, payload) {
+  const response = await fetch(`${base(ownPort)}/api/${route}?viewerex=1`, {
+    signal: AbortSignal.timeout(2500),
+    ...(payload === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
+      body: JSON.stringify(payload),
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Live2DViewerEX 操作未完成");
+  return result;
+}
+
 function panelState(port) {
   return fetch(base(port) + "/api/state", { signal: AbortSignal.timeout(1500) }).then((response) => {
     if (!response.ok) throw new Error("控制台尚未就绪");
@@ -298,6 +334,9 @@ function startBridge() {
         send({ connected: false });
       } else if (incoming.url === "/status") {
         send({ connected: Boolean(pet && selectedPort === port) });
+      } else if (incoming.url === "/viewer-menu" && port === ownPort) {
+        showViewerMenu();
+        send({ shown: true });
       } else {
         send({ error: "未知操作" }, 404);
       }
@@ -309,6 +348,29 @@ function startBridge() {
 }
 
 function installHandlers() {
+  ipcMain.handle("viewer-menu:state", (event) => {
+    if (event.sender === viewerMenu?.webContents) return viewerRequest("state");
+  });
+  ipcMain.handle("viewer-menu:action", async (event, action) => {
+    const popup = viewerMenu;
+    if (event.sender !== popup?.webContents) return;
+    if (action === "open" || action === "close") {
+      popup.close();
+      if (action === "open") showManager(ownPort, true);
+      return;
+    }
+    if (!["action", "voice", "costume", "reset"].includes(action)) return;
+    try {
+      const state = await viewerRequest("state");
+      if (!state.viewerLinked) throw new Error("Live2DViewerEX 已断开连接");
+      if (action === "reset") await viewerRequest("reset", {});
+      else if (state.looping[action]) await viewerRequest("stop", { kind: action });
+      else await viewerRequest("operate", { kind: action, loop: true, random: true });
+      if (!popup.isDestroyed()) popup.close();
+    } catch (error) {
+      dialog.showErrorBox("Live2DViewerEX", error.message);
+    }
+  });
   ipcMain.handle("pet:pick-role", async (event) => {
     if (event.sender !== manager?.webContents || managerPort !== ownPort) return false;
     const { canceled, filePaths } = await dialog.showOpenDialog(manager, {

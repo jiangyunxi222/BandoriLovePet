@@ -95,8 +95,8 @@ def endpoint_record(panel):
         return None
 
 
-def endpoint_for(panel):
-    """Reuse a controller only when its live identity matches this directory."""
+def live_panel(panel):
+    """Return the port and status of the controller for this exact directory."""
     record = endpoint_record(panel)
     if record is None:
         return None
@@ -104,9 +104,15 @@ def endpoint_for(panel):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=.5) as response:
             state = json.load(response)
-        return port if isinstance(state, dict) and state.get("instance") == instance_id(panel) else None
+        if isinstance(state, dict) and state.get("instance") == instance_id(panel):
+            return port, state
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def endpoint_for(panel):
+    connection = live_panel(panel)
+    return connection[0] if connection else None
 
 
 @lru_cache(maxsize=128)

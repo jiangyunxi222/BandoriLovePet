@@ -37,11 +37,13 @@ class ViewerControlsTests(unittest.TestCase):
             "id": "test-role", "directory": ".", "entry": self.entry, "costumes": [costume], "voices": [],
         }}
         self.sent = []
+        self.variables = {"selected_costume": 1, "costume_loading": 0, "page_load_count": 1,
+                          "page_backend_connected": 0}
 
         def native_data(path):
             if path.name == "autosave.dat":
                 return {"charDatas": [{}, {"jsonFilePath": str(self.loaded_entry)}]}
-            return {"varFloats": {"selected_costume": 1, "costume_loading": 0}}
+            return {"varFloats": self.variables.copy()}
 
         for patcher in (patch.object(server, "native_data", side_effect=native_data),
                         patch.object(server.Player, "connect", lambda player: setattr(player, "socket", object())),
@@ -87,6 +89,54 @@ class ViewerControlsTests(unittest.TestCase):
             self.owner.connect_imported_viewer()
         self.assertEqual(self.sent, [])
         self.assertIsNone(self.owner.viewer_session)
+
+    def motion_names(self):
+        return [data["mtn"] for message, data in self.sent if message == 13200]
+
+    def test_command_connection_leaves_the_builtin_menu_active(self):
+        self.owner.connect_imported_viewer()
+        self.owner.viewer_session.sync_loop_flags()
+        self.owner.disconnect_viewer()
+        self.assertFalse(any("page_backend_connected" in motion for motion in self.motion_names()))
+
+    def test_stale_menu_claim_is_cleared_once_per_loaded_model(self):
+        self.variables["page_backend_connected"] = 1
+        self.owner.connect_imported_viewer()
+        viewer = self.owner.viewer_session
+        reset = "web_set_page_backend_connected_0"
+        self.assertEqual(self.motion_names().count(reset), 1)
+        viewer.keep_native_menu(self.variables)
+        self.assertEqual(self.motion_names().count(reset), 1)
+        self.variables.update(page_load_count=2, costume_loading=1)
+        viewer.keep_native_menu(self.variables)
+        self.assertEqual(self.motion_names().count(reset), 1)
+        self.variables["costume_loading"] = 0
+        viewer.keep_native_menu(self.variables)
+        self.assertEqual(self.motion_names().count(reset), 2)
+        self.assertNotIn("web_set_page_backend_connected_1", self.motion_names())
+
+    def test_connection_preserves_the_roles_running_menu_controller(self):
+        self.variables["page_backend_connected"] = 1
+        with patch.object(server, "live_panel", return_value=(25001, {"linked": True, "slot": 1, "menu": {"visible": False}})):
+            self.owner.connect_imported_viewer()
+            with patch.object(server.desktop_pet, "request") as bridge:
+                self.owner.viewer_session.route_viewer_menu({"page_menu_request": 1})
+            bridge.assert_not_called()
+            self.owner.disconnect_viewer()
+        self.assertFalse(any("page_backend_connected" in motion for motion in self.motion_names()))
+
+    def test_clicks_route_to_the_desktop_menu_when_no_role_controller_is_listening(self):
+        self.variables["page_menu_request"] = 3
+        self.owner.connect_imported_viewer()
+        viewer = self.owner.viewer_session
+        with patch.object(server, "live_panel", return_value=(25001, {"linked": True, "slot": 2, "menu": {}})), \
+             patch.object(server.desktop_pet, "request") as bridge:
+            for count in (3, 4, 4, 0, 1):
+                viewer.route_viewer_menu({"page_menu_request": count})
+            self.assertEqual(bridge.call_count, 2)
+            for call in bridge.call_args_list:
+                self.assertEqual(call.args, ("viewer-menu",))
+                self.assertEqual(call.kwargs, {"port": server.PORT})
 
 
 if __name__ == "__main__":

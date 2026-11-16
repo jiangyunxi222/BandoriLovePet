@@ -24,7 +24,7 @@ from urllib.parse import unquote, urlsplit
 import voice_library
 import role_package
 import desktop_pet
-from model_watch import instance_id, endpoint_for, endpoint_record, viewer_bin
+from model_watch import instance_id, endpoint_for, endpoint_record, live_panel, viewer_bin
 
 HERE = (
     Path(sys.executable).resolve().parent
@@ -257,6 +257,7 @@ class Studio:
         self.viewer_session = None
         self.viewer_owner = None
         self.viewer_entry = None
+        self.viewer_menu_generation = None
         self.pet_monitor_started = False
         self.player.on_tap = self.on_native_tap
         self.loading = False
@@ -840,8 +841,12 @@ class Studio:
             viewer.linked = False
             raise ConnectionError("请启动 Live2DViewerEX 并在它的设置中启用 API，再试一次") from error
         viewer.linked = True
+        viewer.viewer_menu_generation = None
         self.viewer_session = viewer
-        viewer.adopt_native_costume()
+        variables = viewer.native_variables()
+        viewer.last_menu_request = variables.get("page_menu_request", 0)
+        viewer.keep_native_menu(variables)
+        viewer.adopt_native_costume(variables)
         viewer.sync_preferences()
         viewer.sync_favorites()
         viewer.sync_loop_flags()
@@ -865,7 +870,10 @@ class Studio:
                         or time.monotonic() - self.player.last_received > 35):
                     self.viewer_owner.disconnect_viewer()
                     continue
-                self.adopt_native_costume()
+                variables = self.native_variables()
+                self.keep_native_menu(variables)
+                self.route_viewer_menu(variables)
+                self.adopt_native_costume(variables)
                 if time.monotonic() - last_ping >= 10:
                     try:
                         self.player.send(10000, None)
@@ -873,12 +881,43 @@ class Studio:
                         self.viewer_owner.disconnect_viewer()
                     last_ping = time.monotonic()
 
+    def keep_native_menu(self, variables):
+        if variables.get("costume_loading") != 0 or variables.get("page_backend_connected") != 1:
+            return
+        generation = variables.get("page_load_count", 0)
+        if generation == self.viewer_menu_generation:
+            return
+        self.viewer_menu_generation = generation
+        # A previous command-only connection could have claimed menu events.
+        # Preserve the claim when the role's real menu controller is active.
+        if not self.role_panel_owns_menu():
+            self.native("web_set_page_backend_connected_0")
+
+    def role_panel_owns_menu(self):
+        panel = panel_directory(Path(self.native_model_file()).parent)
+        connection = live_panel(panel)
+        if not connection:
+            return False
+        _, state = connection
+        return bool(state.get("linked") and state.get("slot") == self.slot and isinstance(state.get("menu"), dict))
+
+    def route_viewer_menu(self, variables):
+        request = variables.get("page_menu_request")
+        if type(request) not in (int, float):
+            return
+        previous = self.last_menu_request
+        self.last_menu_request = request
+        if previous is None or request <= previous or self.role_panel_owns_menu():
+            return
+        try:
+            desktop_pet.request("viewer-menu", port=PORT)
+        except ConnectionError:
+            pass
+
     def disconnect_viewer(self):
         viewer = self.viewer_session
         if viewer is None:
             return
-        if viewer.linked:
-            viewer.native("web_set_page_backend_connected_0")
         viewer.linked = False
         viewer.player.close()
         viewer.costume_due = False
@@ -1028,8 +1067,9 @@ class Studio:
             "worldHeight": world_height,
         }
 
-    def adopt_native_costume(self):
-        variables = self.native_variables()
+    def adopt_native_costume(self, variables=None):
+        if variables is None:
+            variables = self.native_variables()
         costume_id = variables.get("selected_costume")
         if variables.get("costume_loading") != 0 or costume_id not in {
             item["id"] for item in self.catalog()["costumes"]
@@ -1047,7 +1087,8 @@ class Studio:
         return False
 
     def sync_loop_flags(self):
-        self.native("web_set_page_backend_connected_1")
+        if self.viewer_owner is None:
+            self.native("web_set_page_backend_connected_1")
         for kind in self.jobs:
             self.native(f"web_set_page_loop_{kind}_{int(self.looping[kind])}")
 
