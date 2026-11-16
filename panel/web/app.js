@@ -579,20 +579,29 @@ async function loadModel(key) {
     };
     host.onpointerleave = () => view.model?.internalModel.focusController.focus(0, 0);
     host.onpointercancel = host.onpointerleave;
+    const costume = currentCostume();
+    const regions = costume.hitRegions || {};
+    let desktopMenu = regions.menu;
+    if (view.petWindow && !costume.cubism3 && desktopMenu && regions.wardrobe &&
+        desktopMenu[3] > model.internalModel.originalHeight) {
+      const [left, top, right, bottom] = desktopMenu;
+      const [, waistTop, , waistBottom] = regions.wardrobe;
+      const extension = (right - left) * .12;
+      // Match the Workshop adjustment for models cropped below the knee.
+      desktopMenu = [left - extension, Math.min(top, waistTop + (waistBottom - waistTop) * .62), right + extension, bottom];
+    }
     function hitRegion(event) {
       if (!view.model || !$("#model-loading").hidden) return;
       const rectangle = host.getBoundingClientRect();
       const point = view.model.toModelPosition(new PIXI.Point(event.clientX - rectangle.left, event.clientY - rectangle.top));
       const internal = view.model.internalModel;
-      if (currentCostume().cubism3) {
+      if (costume.cubism3) {
         point.x = (point.x - internal.originalWidth / 2) / internal.pixelsPerUnit;
         point.y = (point.y - internal.originalHeight / 2) / internal.pixelsPerUnit;
       }
-      const regions = currentCostume().hitRegions || {};
-      return ["expression", "voice", "left", "right", "body", "wardrobe", "menu"].find((name) => {
-        const box = regions[name];
-        return box && point.x >= box[0] && point.x <= box[2] && point.y >= box[1] && point.y <= box[3];
-      });
+      const contains = (box) => box && point.x >= box[0] && point.x <= box[2] && point.y >= box[1] && point.y <= box[3];
+      if (desktopMenu !== regions.menu && contains(desktopMenu)) return "menu";
+      return ["expression", "voice", "left", "right", "body", "wardrobe", "menu"].find((name) => contains(regions[name]));
     }
     let suppressClick = false;
     if (view.petWindow) {
