@@ -493,6 +493,21 @@ function resetModelView() {
   }
 }
 
+function renderResolution(width, height) {
+  const resolution = Math.min(devicePixelRatio, 2);
+  return view.petWindow ? Math.min(resolution, Math.sqrt(2_500_000 / (width * height))) : resolution;
+}
+
+function resizePetRenderer(host) {
+  const renderer = view.app?.renderer;
+  if (!view.petWindow || !renderer || !host.clientWidth || !host.clientHeight) return;
+  const { clientWidth: width, clientHeight: height } = host;
+  const resolution = renderResolution(width, height);
+  if (renderer.resolution === resolution && renderer.screen.width === width && renderer.screen.height === height) return;
+  renderer.resolution = resolution;
+  renderer.resize(width, height);
+}
+
 function disposeModels(models) {
   for (const model of models) {
     model.internalModel?.off("beforeModelUpdate", updateMouth);
@@ -552,13 +567,11 @@ async function loadModel(key) {
   try {
     if (!window.PIXI?.live2d) throw new Error("Live2D 预览组件未载入");
     if (!view.app) {
-      const resolution = Math.min(devicePixelRatio, 2);
-      const pixelLimit = view.petWindow ? Math.sqrt(2_500_000 / (host.clientWidth * host.clientHeight)) : resolution;
       view.app = new PIXI.Application({
         resizeTo: view.petWindow ? null : host,
         width: host.clientWidth, height: host.clientHeight,
         backgroundAlpha: 0, clearBeforeRender: true, antialias: true,
-        resolution: Math.min(resolution, pixelLimit), autoDensity: true, preserveDrawingBuffer: true,
+        resolution: renderResolution(host.clientWidth, host.clientHeight), autoDensity: true, preserveDrawingBuffer: true,
       });
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
@@ -1185,9 +1198,7 @@ document.addEventListener("keydown", (event) => {
 audio.addEventListener("ended", () => { view.visibleVoice = null; updateSubtitle(); updatePlaying(); renderItems(); });
 audio.addEventListener("error", () => { if (audio.src) toast("语音载入失败，请重试"); });
 new ResizeObserver(([{ target }]) => {
-  if (view.petWindow && view.app && target.clientWidth && target.clientHeight) {
-    view.app.renderer.resize(target.clientWidth, target.clientHeight);
-  }
+  resizePetRenderer(target);
   resetModelView();
 }).observe($("#canvas-host"));
 if (view.petWindow) {
@@ -1195,9 +1206,17 @@ if (view.petWindow) {
   const dimensions = ["x", "y", "width", "height"];
   function drawFrame() {
     pendingSizeFrame = null;
-    const previous = view.sizePreview;
+    const previous = view.sizePreview && {
+      ...view.sizePreview,
+      x: view.sizePreview.x + (view.sizePreview.originX ?? 0) - (nextFrame.originX ?? 0),
+      y: view.sizePreview.y + (view.sizePreview.originY ?? 0) - (nextFrame.originY ?? 0),
+    };
     const moving = animate && previous && nextFrame && dimensions.some(key => Math.abs(nextFrame[key] - previous[key]) >= .5);
-    view.sizePreview = moving ? Object.fromEntries(dimensions.map(key => [key, previous[key] + (nextFrame[key] - previous[key]) * .38])) : nextFrame;
+    view.sizePreview = moving ? {
+      ...nextFrame,
+      ...Object.fromEntries(dimensions.map(key => [key, previous[key] + (nextFrame[key] - previous[key]) * .38])),
+    } : nextFrame;
+    resizePetRenderer($("#canvas-host"));
     resetModelView();
     if (moving) pendingSizeFrame = requestAnimationFrame(drawFrame);
   }

@@ -16,7 +16,7 @@ mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
 let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
-let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer;
+let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer, fitPetTimer;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
@@ -100,8 +100,9 @@ function showPet(port) {
       y: bounds.y + bounds.height,
       height: Math.min(maximumPetHeight(display.workArea), Math.max(180, bounds.height)),
     };
+    petScene.surface = paddedPetBounds(petBounds());
     pet = new BrowserWindow({
-      ...display.workArea, show: false, transparent: true, frame: false, resizable: false,
+      ...petScene.surface, show: false, transparent: true, frame: false, resizable: false,
       backgroundColor: "#00000000",
       title: "BandoriLove 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
       webPreferences: windowOptions,
@@ -130,6 +131,7 @@ function showPet(port) {
     pet.on("closed", () => {
       clearInterval(cursorTimer);
       clearTimeout(saveBoundsTimer);
+      clearTimeout(fitPetTimer);
       petScene = petDrag = null;
       nativeWindow.stdin.end();
       pet = petWindowProcess = selectedPort = null;
@@ -155,15 +157,59 @@ function petBounds() {
   const { workArea } = display;
   const height = Math.round(size);
   const width = Math.round(height * 0.745);
-  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, Math.round(center - width / 2)));
-  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, Math.round(foot - height)));
+  const frame = { x: Math.round(center - width / 2), y: Math.round(foot - height), width, height };
+  return petDrag?.moved ? frame : fitInWorkArea(frame, workArea);
+}
+
+function fitInWorkArea(bounds, workArea) {
+  const width = Math.min(bounds.width, workArea.width);
+  const height = Math.min(bounds.height, workArea.height);
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, bounds.x));
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, bounds.y));
   return { x, y, width, height };
 }
 
+function paddedPetBounds(frame) {
+  const side = Math.max(52, Math.ceil(frame.width * .2));
+  const top = Math.max(64, Math.ceil(frame.height * .18));
+  const bottom = Math.max(36, Math.ceil(frame.height * .1));
+  return fitInWorkArea({
+    x: frame.x - side, y: frame.y - top, width: frame.width + side * 2, height: frame.height + top + bottom,
+  }, petScene.display.workArea);
+}
+
+function movePetSurface(bounds) {
+  const previous = petScene.surface;
+  if (previous.width !== bounds.width || previous.height !== bounds.height) pet.setBounds(bounds);
+  else if (previous.x !== bounds.x || previous.y !== bounds.y) pet.setPosition(bounds.x, bounds.y);
+  petScene.surface = bounds;
+}
+
+function fitPetSurface() {
+  clearTimeout(fitPetTimer);
+  if (!petScene || petDrag?.moved) return;
+  movePetSurface(paddedPetBounds(petBounds()));
+  sendPetFrame();
+}
+
+function expandPetSurface(frame) {
+  const surface = petScene.surface;
+  if (frame.x >= surface.x && frame.y >= surface.y &&
+      frame.x + frame.width <= surface.x + surface.width &&
+      frame.y + frame.height <= surface.y + surface.height) return;
+  const padded = paddedPetBounds(frame);
+  const x = Math.min(surface.x, padded.x);
+  const y = Math.min(surface.y, padded.y);
+  movePetSurface(fitInWorkArea({
+    x, y, width: Math.max(surface.x + surface.width, padded.x + padded.width) - x,
+    height: Math.max(surface.y + surface.height, padded.y + padded.height) - y,
+  }, petScene.display.workArea));
+}
+
 function petFrame() {
-  const { workArea } = petScene.display;
+  const { surface } = petScene;
   const { x, y, width, height } = petBounds();
-  return { x: x - workArea.x, y: y - workArea.y, width, height };
+  return { x: x - surface.x, y: y - surface.y, width, height, originX: surface.x, originY: surface.y };
 }
 
 function sendPetFrame(animate = false) {
@@ -171,26 +217,41 @@ function sendPetFrame(animate = false) {
 }
 
 function setPetHeight(height, animate) {
-  if (!petScene) return;
+  if (!petScene || petDrag?.moved) return;
   petScene.height = Math.min(maximumPetHeight(petScene.display.workArea), Math.max(180, height));
+  expandPetSurface(petBounds());
   sendPetFrame(animate);
   scheduleBoundsSave();
+  clearTimeout(fitPetTimer);
+  if (animate) fitPetTimer = setTimeout(fitPetSurface, 260);
 }
 
 function usePetDisplay(display) {
-  const before = petScene.display.workArea;
   petScene.display = display;
-  const { workArea } = display;
-  petScene.height = Math.min(petScene.height, maximumPetHeight(workArea));
-  if (["x", "y", "width", "height"].some(key => before[key] !== workArea[key])) pet.setBounds(workArea);
+  petScene.height = Math.min(petScene.height, maximumPetHeight(display.workArea));
+}
+
+function finishPetDrag() {
+  const finalFrame = petDrag?.moved ? petBounds() : null;
+  petDrag = null;
+  if (!finalFrame) return;
+  usePetDisplay(screen.getDisplayMatching(finalFrame));
+  const { x, y, width, height } = petBounds();
+  petScene.x = x + width / 2;
+  petScene.y = y + height;
+  fitPetSurface();
+  scheduleBoundsSave();
 }
 
 function movePet(x, y) {
-  petScene.x = petDrag.x + x - petDrag.pointerX;
-  petScene.y = petDrag.y + y - petDrag.pointerY;
-  usePetDisplay(screen.getDisplayNearestPoint({ x, y }));
+  const dx = x - petDrag.pointerX;
+  const dy = y - petDrag.pointerY;
+  petDrag.moved = true;
+  petScene.x = petDrag.x + dx;
+  petScene.y = petDrag.y + dy;
+  const { surface } = petDrag;
+  movePetSurface({ ...surface, x: surface.x + dx, y: surface.y + dy });
   sendPetFrame();
-  scheduleBoundsSave();
 }
 
 function showTrayMenu(bounds) {
@@ -211,7 +272,10 @@ function showTrayMenu(bounds) {
   popup.webContents.on("will-navigate", (event) => event.preventDefault());
   popup.on("blur", () => popup.close());
   popup.on("closed", () => {
-    if (trayMenu === popup) trayMenu = null;
+    if (trayMenu === popup) {
+      trayMenu = null;
+      fitPetSurface();
+    }
   });
   popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
   popup.loadFile(path.join(__dirname, "tray-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
@@ -403,16 +467,20 @@ function installHandlers() {
   ipcMain.on("pet:hit", (event, hit) => {
     if (event.sender === pet?.webContents) pet.setIgnoreMouseEvents(hit !== true);
   });
-  ipcMain.on("pet:drag", (event, operation, x, y) => {
+  ipcMain.on("pet:drag", (event, operation) => {
     if (event.sender !== pet?.webContents || !petScene) return;
     if (operation === "end") {
-      petDrag = null;
+      finishPetDrag();
       return;
     }
-    if (!["begin", "move"].includes(operation) || !Number.isInteger(x) || !Number.isInteger(y)) return;
+    if (!["begin", "move"].includes(operation)) return;
+    const { x, y } = screen.getCursorScreenPoint();
     if (operation === "begin") {
       const bounds = petBounds();
-      petDrag = { pointerX: x, pointerY: y, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height };
+      petDrag = {
+        pointerX: x, pointerY: y, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height,
+        surface: petScene.surface, moved: false,
+      };
     }
     if (operation === "move" && petDrag) movePet(x, y);
   });
@@ -437,7 +505,9 @@ function installHandlers() {
     if (event.sender === trayMenu?.webContents && Number.isFinite(percent)) setPetHeight(percent / 100 * defaultPetHeight, false);
   });
   ipcMain.on("pet:size:commit", (event) => {
-    if (event.sender === trayMenu?.webContents) savePetBounds();
+    if (event.sender !== trayMenu?.webContents) return;
+    fitPetSurface();
+    savePetBounds();
   });
   ipcMain.on("tray:action", (event, action) => {
     if (event.sender !== trayMenu?.webContents) return;
@@ -488,7 +558,7 @@ async function start() {
   const updatePetDisplay = () => {
     if (!petScene) return;
     usePetDisplay(screen.getDisplayMatching(petBounds()));
-    sendPetFrame();
+    fitPetSurface();
     scheduleBoundsSave();
   };
   screen.on("display-metrics-changed", updatePetDisplay);
