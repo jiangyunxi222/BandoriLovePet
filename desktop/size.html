@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>桌宠大小</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px 18px 14px; color: #493e50; background: #faf7fa; font: 14px "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    label { font-weight: 600; }
+    output { color: #915470; font-variant-numeric: tabular-nums; }
+    input { display: block; margin: 13px 0 0; width: 100%; accent-color: #c36d90; cursor: pointer; }
+    input:focus-visible { outline: 2px solid #bd668b; outline-offset: 5px; }
+    input:disabled { cursor: default; }
+    p { margin: 8px 0 0; font-size: 12px; color: #746778; }
+  </style>
+</head>
+<body>
+  <header><label for="size">桌宠大小</label><output for="size" id="percentage"></output></header>
+  <input type="range" id="size" disabled>
+  <p id="status" hidden>请先连接桌面。</p>
+  <script>
+    const slider = document.querySelector('#size');
+    const percentage = document.querySelector('#percentage');
+    function showValue() {
+      percentage.value = `${slider.value}%`;
+      slider.setAttribute('aria-valuetext', percentage.value);
+    }
+    window.petSize.get().then((state) => {
+      if (!state) { document.querySelector('#status').hidden = false; return; }
+      slider.min = state.min;
+      slider.max = state.max;
+      slider.value = state.value;
+      slider.disabled = false;
+      showValue();
+    });
+    slider.addEventListener('input', () => {
+      showValue();
+      window.petSize.set(slider.valueAsNumber);
+    });
+    slider.addEventListener('change', () => window.petSize.commit());
+    addEventListener('keydown', (event) => { if (event.key === 'Escape') window.petSize.close(); });
+  </script>
+</body>
+</html>

@@ -302,13 +302,14 @@ a {
   height:100%;
   touch-action:pan-y
 }
-html:has(body.desktop-pet), body.desktop-pet, body.desktop-pet .workspace, body.desktop-pet .stage {
+html[data-desktop-pet], html[data-desktop-pet] body,
+html[data-desktop-pet] .workspace, html[data-desktop-pet] .stage {
   background: transparent;
   border: 0;
   box-shadow: none;
 }
-body.desktop-pet .workspace, body.desktop-pet .content,
-body.desktop-pet .studio-layout, body.desktop-pet .stage, body.desktop-pet #canvas-host {
+html[data-desktop-pet] .workspace, html[data-desktop-pet] .content,
+html[data-desktop-pet] .studio-layout, html[data-desktop-pet] .stage, html[data-desktop-pet] #canvas-host {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -319,9 +320,8 @@ body.desktop-pet .studio-layout, body.desktop-pet .stage, body.desktop-pet #canv
   margin: 0;
   padding: 0;
 }
-body.desktop-pet .studio-layout { display: block; }
-body.desktop-pet .topbar, body.desktop-pet .control-panel, body.desktop-pet .bottom-bar,
-body.desktop-pet .stage-floor, body.desktop-pet .stage-orbit, body.desktop-pet .stage-spark {
+html[data-desktop-pet] .studio-layout { display: block; }
+html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .stage-orbit, .stage-spark, .stage-label) {
   display: none;
 }
 .subtitle {

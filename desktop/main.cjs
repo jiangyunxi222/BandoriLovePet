@@ -15,12 +15,14 @@ mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
 let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
+let sizePopup, sizePreview, zoomTimer, saveBoundsTimer, zoomHeight, displayedZoomHeight;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
 preferences.layer ||= preferences.onTop === false ? "bottom" : "top";
 
 const base = (port) => `http://127.0.0.1:${port}`;
+const defaultPetHeight = 470;
 const windowOptions = {
   preload: path.join(__dirname, "preload.cjs"),
   contextIsolation: true, sandbox: true, nodeIntegration: false,
@@ -29,6 +31,12 @@ const windowOptions = {
 
 function save() {
   writeFileSync(statusFile, JSON.stringify(preferences), "utf8");
+}
+
+function savePetBounds(window) {
+  clearTimeout(saveBoundsTimer);
+  preferences.bounds = sizePreview?.bounds ?? window.getBounds();
+  save();
 }
 
 function guardNavigation(win, getPort) {
@@ -74,7 +82,7 @@ function showPet(port) {
   selectedPort = port;
   if (!pet || pet.isDestroyed()) {
     const area = screen.getPrimaryDisplay().workArea;
-    const bounds = preferences.bounds || { x: area.x + area.width - 365, y: area.y + area.height - 490, width: 350, height: 470 };
+    const bounds = preferences.bounds || { x: area.x + area.width - 365, y: area.y + area.height - 490, width: 350, height: defaultPetHeight };
     if (!screen.getAllDisplays().some(({ workArea: a }) =>
       bounds.x >= a.x && bounds.x < a.x + a.width && bounds.y >= a.y && bounds.y < a.y + a.height)) {
       bounds.x = area.x;
@@ -106,11 +114,23 @@ function showPet(port) {
       if (within || inside) window.webContents.send("pet:cursor", within ? { x, y } : null);
       inside = within;
     }, 40);
-    pet.on("moved", () => { preferences.bounds = pet.getBounds(); save(); });
+    const scheduleBoundsSave = () => {
+      if (sizePreview) return;
+      clearTimeout(saveBoundsTimer);
+      saveBoundsTimer = setTimeout(() => savePetBounds(window), 180);
+    };
+    pet.on("moved", scheduleBoundsSave);
+    pet.on("resize", scheduleBoundsSave);
+    pet.on("close", () => savePetBounds(window));
     pet.on("closed", () => {
       clearInterval(cursorTimer);
+      clearTimeout(zoomTimer);
+      clearTimeout(saveBoundsTimer);
+      zoomTimer = null;
+      zoomHeight = displayedZoomHeight = undefined;
       nativeWindow.stdin.end();
       pet = petWindowProcess = selectedPort = null;
+      sizePopup?.close();
     });
   }
   pet.loadURL(base(port) + "/?pet=1").then(() => {
@@ -122,19 +142,91 @@ function showPet(port) {
   }).catch(() => {});
 }
 
-function resizePet(factor) {
-  if (!pet) return;
-  const bounds = pet.getBounds();
-  const { workArea } = screen.getDisplayMatching(bounds);
-  const maxHeight = Math.min(1200, workArea.height, Math.floor(workArea.width / 0.745));
-  const height = Math.min(maxHeight, Math.max(180, Math.round(bounds.height * factor)));
+function maximumPetHeight(area) {
+  return Math.min(1200, area.height, Math.floor(area.width / 0.745));
+}
+
+function petBoundsAtHeight(bounds, workArea, height) {
   const width = Math.round(height * 0.745);
   const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
   const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, bounds.y + bounds.height - height));
-  pet.setBounds({ x, y, width, height });
-  applyPetLayer();
-  preferences.bounds = pet.getBounds();
-  save();
+  return { x, y, width, height };
+}
+
+function drawPetSize() {
+  zoomTimer = null;
+  if (!pet || zoomHeight === undefined) return;
+  const bounds = pet.getBounds();
+  const { workArea } = screen.getDisplayMatching(bounds);
+  zoomHeight = Math.min(maximumPetHeight(workArea), Math.max(180, zoomHeight));
+  const target = Math.round(zoomHeight);
+  const current = displayedZoomHeight ?? bounds.height;
+  const height = Math.abs(target - current) <= 3 ? target : Math.round(current + (target - current) * 0.55);
+  displayedZoomHeight = height;
+  const next = petBoundsAtHeight(bounds, workArea, height);
+  if (next.width !== bounds.width || height !== bounds.height) pet.setBounds(next);
+  if (height !== target) zoomTimer = setTimeout(drawPetSize, 20);
+}
+
+function previewPetHeight(height) {
+  if (!pet) return;
+  if (!sizePreview) {
+    clearTimeout(zoomTimer);
+    clearTimeout(saveBoundsTimer);
+    zoomTimer = null;
+    const original = pet.getBounds();
+    const { workArea } = screen.getDisplayMatching(original);
+    const envelope = petBoundsAtHeight(original, workArea, maximumPetHeight(workArea));
+    sizePreview = { original, workArea, envelope, bounds: original };
+    pet.setBounds(envelope);
+  }
+  const { original, workArea, envelope } = sizePreview;
+  const bounds = petBoundsAtHeight(original, workArea, Math.round(Math.min(envelope.height, Math.max(180, height))));
+  sizePreview.bounds = bounds;
+  pet.webContents.send("pet:size-preview", { ...bounds, x: bounds.x - envelope.x, y: bounds.y - envelope.y });
+}
+
+function finishSizePreview() {
+  if (!sizePreview) return;
+  const { bounds } = sizePreview;
+  sizePreview = null;
+  if (!pet || pet.isDestroyed()) return;
+  zoomHeight = displayedZoomHeight = bounds.height;
+  pet.setBounds(bounds);
+  pet.webContents.send("pet:size-preview", null);
+  savePetBounds(pet);
+}
+
+function setPetHeight(height) {
+  if (!pet) return;
+  const { workArea } = screen.getDisplayMatching(pet.getBounds());
+  zoomHeight = Math.min(maximumPetHeight(workArea), Math.max(180, height));
+  if (!zoomTimer) zoomTimer = setTimeout(drawPetSize, 16);
+}
+
+function showPetSize() {
+  if (sizePopup && !sizePopup.isDestroyed()) { sizePopup.focus(); return; }
+  const anchor = tray.getBounds();
+  const { workArea } = screen.getDisplayMatching(anchor);
+  const width = 288, height = 108;
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, anchor.x + anchor.width - width));
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height - 8, anchor.y - height - 8));
+  const popup = new BrowserWindow({
+    x, y, width, height, show: false, frame: false, resizable: false, skipTaskbar: true,
+    alwaysOnTop: true, backgroundColor: "#faf7fa",
+    webPreferences: { preload: path.join(__dirname, "size-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
+  });
+  sizePopup = popup;
+  popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  popup.webContents.on("will-navigate", (event) => event.preventDefault());
+  popup.on("blur", () => popup.close());
+  popup.on("closed", () => {
+    if (sizePopup !== popup) return;
+    sizePopup = null;
+    finishSizePreview();
+  });
+  popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
+  popup.loadFile(path.join(__dirname, "size.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
 }
 
 function panelState(port) {
@@ -220,11 +312,37 @@ function installHandlers() {
     if (event.sender !== pet?.webContents) return;
     if (operation === "end") { windowCommand("end"); return; }
     if (!["begin", "move"].includes(operation) || !Number.isInteger(x) || !Number.isInteger(y)) return;
+    if (operation === "begin") {
+      clearTimeout(zoomTimer);
+      zoomTimer = null;
+      zoomHeight = displayedZoomHeight = undefined;
+    }
     const pointer = screen.dipToScreenPoint({ x, y });
     windowCommand(`${operation} ${pointer.x} ${pointer.y}`);
   });
-  ipcMain.on("pet:zoom", (event, direction) => {
-    if (event.sender === pet?.webContents) resizePet(direction > 0 ? 1.12 : 0.89);
+  ipcMain.on("pet:zoom", (event, steps) => {
+    if (event.sender !== pet?.webContents || sizePreview || !Number.isFinite(steps)) return;
+    const factor = 1.12 ** Math.max(-3, Math.min(3, steps));
+    setPetHeight((zoomHeight ?? pet.getBounds().height) * factor);
+  });
+  ipcMain.handle("pet:size:get", (event) => {
+    if (event.sender !== sizePopup?.webContents || !pet) return null;
+    const bounds = pet.getBounds();
+    const { workArea } = screen.getDisplayMatching(bounds);
+    return {
+      min: Math.ceil(180 / defaultPetHeight * 100),
+      max: Math.floor(maximumPetHeight(workArea) / defaultPetHeight * 100),
+      value: Math.round((zoomHeight ?? bounds.height) / defaultPetHeight * 100),
+    };
+  });
+  ipcMain.on("pet:size:set", (event, percent) => {
+    if (event.sender === sizePopup?.webContents && Number.isFinite(percent)) previewPetHeight(percent / 100 * defaultPetHeight);
+  });
+  ipcMain.on("pet:size:commit", (event) => {
+    if (event.sender === sizePopup?.webContents) finishSizePreview();
+  });
+  ipcMain.on("pet:size:close", (event) => {
+    if (event.sender === sizePopup?.webContents) sizePopup.close();
   });
 }
 
@@ -266,8 +384,7 @@ async function start() {
         applyPetLayer();
       },
     })),
-    { label: "放大", click: () => resizePet(1.12) },
-    { label: "缩小", click: () => resizePet(0.89) },
+    { label: "桌宠大小…", click: showPetSize },
     { type: "separator" },
     { label: "退出程序", click: () => app.quit() },
   ]));

@@ -4,16 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
+  <script>
+    if (window.desktopPet && new URLSearchParams(location.search).get("pet") === "1") {
+      document.documentElement.dataset.desktopPet = "";
+    }
+  </script>
   <title>BandoriLove · 角色控制台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/rounded.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/sans-regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=desktop-pet-2">
+  <link rel="stylesheet" href="style.css?v=desktop-pet-3">
   <script defer src="vendor/live2dcubismcore.min.js"></script>
   <script defer src="vendor/live2d.min.js"></script>
   <script defer src="vendor/pixi.min.js"></script>
   <script defer src="vendor/index.min.js"></script>
-  <script defer src="app.js?v=desktop-pet-4"></script>
+  <script defer src="app.js?v=desktop-pet-6"></script>
 </head>
 <body>
   <main class="workspace">
@@ -23,8 +28,8 @@
       <button id="import-role" class="connection" hidden>更换角色包</button>
       <button id="exit-preview" class="subtle-button" hidden>退出控制台</button>
       <input id="role-zip" type="file" accept=".zip,application/zip" hidden>
-      <select id="desktop-provider" aria-label="桌面播放器" class="connection" hidden><option value="viewerex">Live2DViewerEX</option><option value="pet">独立桌宠</option></select>
-      <button id="connect" class="connection"><span class="status-dot"></span><span id="connect-label">连接桌面</span><span aria-hidden="true">↗</span></button>
+      <button id="pet-visibility" class="subtle-button" aria-pressed="false" hidden>显示桌宠</button>
+      <button id="connect" class="connection" aria-pressed="false" hidden><span class="status-dot" aria-hidden="true"></span><span>Live2DViewerEX</span></button>
     </header>
     <section id="role-welcome" class="role-welcome" hidden><h1>导入角色包</h1><p>选择 Garupa 或 OurNotes 的单角色 ZIP。</p><button id="import-first-role" class="primary-button">选择 ZIP</button></section>
     <p id="role-import-status" class="role-import-status" role="status" hidden></p>

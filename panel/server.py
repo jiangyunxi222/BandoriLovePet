@@ -41,7 +41,7 @@ REPO = HERE.parent
 WEB = Path(os.environ.get("BANDORILOVE_WEB_DIR", HERE / "web"))
 PORT = 25000
 STANDALONE = (__name__ == "__main__" and (HERE / "standalone.mode").is_file())
-NATIVE = HERE / ".local/no-player" if STANDALONE else viewer_bin(HERE)
+NATIVE = viewer_bin(HERE)
 KINDS = ("action", "expression", "costume", "voice")
 
 
@@ -253,6 +253,9 @@ class Studio:
         self.slot = None
         self.linked = False
         self.pet_linked = False
+        self.viewer_session = None
+        self.viewer_owner = None
+        self.viewer_entry = None
         self.pet_monitor_started = False
         self.player.on_tap = self.on_native_tap
         self.loading = False
@@ -327,6 +330,8 @@ class Studio:
             archive.unlink()
             with self.lock:
                 previous = self.active_package
+                self.disconnect_viewer()
+                self.viewer_session = None
                 if self.pet_linked:
                     try:
                         desktop_pet.request("detach", port=PORT)
@@ -439,12 +444,19 @@ class Studio:
         atomic_write(self.state_path, self.saved)
 
     def snapshot(self):
+        owner = self.viewer_owner or self
+        viewer = owner.viewer_session or owner
+        viewer_linked = viewer.linked and viewer.player.socket is not None
+        controlling_viewer = self.linked and self.player.socket is not None
+        controlling_pet = self.viewer_owner is None and self.pet_linked
         return {
             "instance": instance_id(HERE),
             "role": self.current,
             "settings": copy.deepcopy(self.settings()) if self.current else {},
-            "linked": self.pet_linked or (self.linked and self.player.socket is not None),
-            "desktopProvider": "pet" if self.pet_linked else "viewerex" if self.linked else None,
+            "linked": controlling_viewer or controlling_pet,
+            "petLinked": owner.pet_linked,
+            "viewerLinked": viewer_linked,
+            "desktopProvider": "viewerex" if controlling_viewer else "pet" if controlling_pet else None,
             "reconnecting": self.reconnect_requested
             and (not self.linked or self.player.socket is None),
             "slot": self.slot,
@@ -479,7 +491,7 @@ class Studio:
             if not self.loading:
                 actual = self.slot_path()
                 expected = self.expected_path()
-                if actual and actual != expected:
+                if (actual or self.viewer_owner) and actual != expected:
                     self.linked = False
                     self.reconnect_requested = False
                     self.saved["desktop_requested"] = False
@@ -499,7 +511,7 @@ class Studio:
         return False
 
     def expected_path(self):
-        return model_path(self.root() / self.catalog()["entry"])
+        return self.viewer_entry or model_path(self.root() / self.catalog()["entry"])
 
     def loaded_model(self, slots):
         paths = {model_path(self.root() / item["file"]): item["id"]
@@ -536,7 +548,7 @@ class Studio:
         while True:
             time.sleep(0.25)
             with self.lock:
-                if self.pet_linked:
+                if self.pet_linked and not self.linked and not self.reconnect_requested:
                     continue
                 if not self.reconnect_requested:
                     slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
@@ -732,16 +744,22 @@ class Studio:
         result = desktop_pet.request("attach", port=PORT, role=self.current)
         if not result.get("connected"):
             raise ValueError(result.get("error", "桌宠拒绝连接"))
-        self.player.close()
-        self.linked = False
-        self.slot = None
-        self.reconnect_requested = False
         self.pet_linked = True
         if not self.pet_monitor_started:
             self.pet_monitor_started = True
             threading.Thread(target=self.maintain_pet, daemon=True).start()
-        self.emit("connection")
+        self.emit_connections()
         return self.snapshot()
+
+    def disconnect_pet(self):
+        if not self.pet_linked:
+            return
+        try:
+            desktop_pet.request("detach", port=PORT)
+        except ConnectionError:
+            pass
+        self.pet_linked = False
+        self.emit_connections()
 
     def maintain_pet(self):
         while True:
@@ -755,7 +773,99 @@ class Studio:
                 except ConnectionError:
                     self.pet_linked = False
                 if not self.pet_linked:
-                    self.emit("connection")
+                    self.emit_connections()
+
+    def emit_connections(self):
+        self.emit("connection")
+        if self.viewer_session:
+            self.viewer_session.emit("connection")
+
+    def connect_imported_viewer(self):
+        """Attach to the same integrated entry already loaded in ViewerEX."""
+        entry = self.catalog()["entry"]
+        expected = (self.root() / entry).read_bytes()
+        slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
+        matched_slot = None
+        for index, slot in enumerate(slots):
+            location = slot.get("jsonFilePath")
+            if not location:
+                continue
+            file = Path(location)
+            if file.name.casefold() == entry.casefold() and file.is_file() and file.stat().st_size == len(expected) and file.read_bytes() == expected:
+                matched_slot = index, model_path(location)
+                break
+        if matched_slot is None:
+            raise ValueError(f"请先在 Live2DViewerEX 中加载同一角色包的 {entry}")
+
+        viewer = self.viewer_session
+        if viewer is None:
+            viewer = Studio(standalone=True)
+            viewer.lock = self.lock
+            viewer.changed = threading.Condition(self.lock)
+            viewer.viewer_owner = self
+            viewer.roles, viewer.roots, viewer.catalogs = self.roles, self.roots, self.catalogs
+            viewer.current = self.current
+            viewer.state_path = HERE / ".local/viewerex-state.json"
+            try:
+                stored = read(viewer.state_path)
+            except (OSError, ValueError):
+                stored = {}
+            if isinstance(stored, dict) and isinstance(stored.get("roles"), dict):
+                viewer.saved = stored
+            else:
+                viewer.saved = {"roles": copy.deepcopy(self.saved["roles"])}
+        viewer.slot, viewer.viewer_entry = matched_slot
+        try:
+            viewer.player.connect()
+        except OSError as error:
+            viewer.linked = False
+            raise ConnectionError("请启动 Live2DViewerEX 并在它的设置中启用 API，再试一次") from error
+        viewer.linked = True
+        self.viewer_session = viewer
+        viewer.adopt_native_costume()
+        viewer.sync_preferences()
+        viewer.sync_favorites()
+        viewer.sync_loop_flags()
+        if not viewer.linked:
+            raise ConnectionError("Live2DViewerEX 的角色已发生变化，请重新连接")
+        if not viewer.monitor_started:
+            viewer.monitor_started = True
+            threading.Thread(target=viewer.maintain_imported_viewer, daemon=True).start()
+        self.emit_connections()
+        return viewer.snapshot()
+
+    def maintain_imported_viewer(self):
+        last_ping = time.monotonic()
+        while True:
+            time.sleep(0.5)
+            with self.lock:
+                if not self.linked:
+                    self.monitor_started = False
+                    return
+                if (not self.player.socket or self.slot_path() != self.expected_path()
+                        or time.monotonic() - self.player.last_received > 35):
+                    self.viewer_owner.disconnect_viewer()
+                    continue
+                self.adopt_native_costume()
+                if time.monotonic() - last_ping >= 10:
+                    try:
+                        self.player.send(10000, None)
+                    except ConnectionError:
+                        self.viewer_owner.disconnect_viewer()
+                    last_ping = time.monotonic()
+
+    def disconnect_viewer(self):
+        viewer = self.viewer_session
+        if viewer is None:
+            return
+        if viewer.linked:
+            viewer.native("web_set_page_backend_connected_0")
+        viewer.linked = False
+        viewer.player.close()
+        viewer.costume_due = False
+        for kind in viewer.jobs:
+            viewer.stop(kind)
+        self.emit_connections()
 
     def connect(self, attach=False):
         if self.standalone:
@@ -1494,8 +1604,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = unquote(urlsplit(self.path).path)
+        request = urlsplit(self.path)
+        path = unquote(request.path)
         try:
+            studio = STUDIO.viewer_session if request.query == "viewerex=1" else STUDIO
             if STUDIO.standalone and WEB != HERE / "web" and path.startswith("/vendor/"):
                 name = path.removeprefix("/vendor/")
                 if name == "index.min.js" and not (HERE / ".local/runtime/live2d.min.js").is_file():
@@ -1508,7 +1620,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/library":
                 return self.respond(200, list(STUDIO.roles.values()))
             if path == "/api/state":
-                return self.respond(200, STUDIO.snapshot())
+                if studio is None:
+                    raise ValueError("请先连接 Live2DViewerEX")
+                return self.respond(200, studio.snapshot())
             if path == "/api/mode":
                 return self.respond(200, {"standalone": STUDIO.standalone})
             if path.startswith("/api/catalog/"):
@@ -1521,7 +1635,9 @@ class Handler(BaseHTTPRequestHandler):
                     "image/webp",
                 )
             if path == "/api/events":
-                return self.events()
+                if studio is None:
+                    raise ValueError("请先连接 Live2DViewerEX")
+                return self.events(studio)
             if path.startswith("/api/preview/"):
                 _, _, _, role_id, costume_id = path.split("/")
                 return self.respond(200, STUDIO.preview(role_id, int(costume_id)))
@@ -1550,11 +1666,11 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, StopIteration, OSError) as error:
             self.respond(404, {"error": str(error)})
 
-    def events(self):
+    def events(self, studio):
         try:
             sequence = min(
-                int(self.headers.get("Last-Event-ID", str(STUDIO.sequence))),
-                STUDIO.sequence,
+                int(self.headers.get("Last-Event-ID", str(studio.sequence))),
+                studio.sequence,
             )
         except ValueError:
             return self.respond(400, {"error": "事件编号无效"})
@@ -1565,12 +1681,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             while True:
-                with STUDIO.changed:
+                with studio.changed:
                     pending = [
-                        event for event in STUDIO.events if event["id"] > sequence
+                        event for event in studio.events if event["id"] > sequence
                     ]
                     if not pending:
-                        STUDIO.changed.wait(timeout=15)
+                        studio.changed.wait(timeout=15)
                 if not pending:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
@@ -1591,6 +1707,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
     def do_POST(self):
+        request = urlsplit(self.path)
+        path = request.path
         origin = self.headers.get("Origin")
         if self.headers.get("X-Studio-Request") != "1" or origin not in (
             None,
@@ -1603,7 +1721,7 @@ class Handler(BaseHTTPRequestHandler):
             if length < 0:
                 self.close_connection = True
                 raise ValueError("请求长度无效")
-            if self.path == "/api/import":
+            if path == "/api/import":
                 self.close_connection = True
                 try:
                     STUDIO.import_role(self.rfile, length)
@@ -1611,14 +1729,16 @@ class Handler(BaseHTTPRequestHandler):
                         KeyError, TypeError, json.JSONDecodeError) as error:
                     raise ValueError("无法读取角色 ZIP，请重新下载角色包") from error
                 return self.respond(200, {"imported": True})
-            if self.path == "/api/exit" and STUDIO.standalone:
+            if path == "/api/exit" and STUDIO.standalone:
+                with STUDIO.lock:
+                    STUDIO.disconnect_viewer()
                 self.close_connection = True
                 self.respond(200, {"closed": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
-            if STUDIO.standalone and (not STUDIO.current or self.path.startswith("/api/voices/")):
+            if STUDIO.standalone and (not STUDIO.current or path.startswith("/api/voices/")):
                 return self.respond(400, {"error": "请先导入角色包" if not STUDIO.current else "预览模式下仅可播放语音"})
-            if self.path == "/api/voices/upload":
+            if path == "/api/voices/upload":
                 if not 0 < length <= voice_library.MAX_AUDIO_BYTES:
                     self.close_connection = True
                     raise ValueError("音频为空或超过 100 MB")
@@ -1633,23 +1753,30 @@ class Handler(BaseHTTPRequestHandler):
                     result = STUDIO.edit_voice(metadata["role"], audio=audio,
                                               subtitle=metadata.get("subtitle"), filename=metadata.get("filename"))
                 return self.respond(200, result)
-            if length > (1500000 if self.path == "/api/thumbnail" else 65536):
+            if length > (1500000 if path == "/api/thumbnail" else 65536):
                 self.close_connection = True
                 raise ValueError("请求过大")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError("请求格式无效")
             with STUDIO.lock:
-                if self.path == "/api/select":
-                    result = STUDIO.select(data["role"], data.get("costume"))
-                elif self.path == "/api/voices/delete":
+                studio = STUDIO.viewer_session if request.query == "viewerex=1" else STUDIO
+                if studio is None:
+                    raise ValueError("请先连接 Live2DViewerEX")
+                if studio.viewer_owner and (not studio.linked or not studio.player.socket) and path in (
+                    "/api/select", "/api/operate", "/api/preference", "/api/favorite", "/api/stop", "/api/reset"
+                ):
+                    raise ValueError("Live2DViewerEX 已断开，请重新连接")
+                if path == "/api/select":
+                    result = studio.select(data["role"], data.get("costume"))
+                elif path == "/api/voices/delete":
                     result = STUDIO.edit_voice(data["role"], delete_id=data["id"])
-                elif self.path == "/api/favorite":
-                    result = STUDIO.favorite(data["flag"], bool(data["enabled"]))
-                elif self.path == "/api/preference":
-                    result = STUDIO.preference(data["key"], data["value"])
-                elif self.path == "/api/operate":
-                    result = STUDIO.operate(
+                elif path == "/api/favorite":
+                    result = studio.favorite(data["flag"], bool(data["enabled"]))
+                elif path == "/api/preference":
+                    result = studio.preference(data["key"], data["value"])
+                elif path == "/api/operate":
+                    result = studio.operate(
                         data["kind"],
                         data.get("id"),
                         bool(data.get("loop")),
@@ -1657,42 +1784,33 @@ class Handler(BaseHTTPRequestHandler):
                         bool(data.get("body")),
                         data.get("direction"),
                     )
-                elif self.path == "/api/stop":
-                    STUDIO.stop(data["kind"])
-                    result = STUDIO.snapshot()
-                elif self.path == "/api/connect":
+                elif path == "/api/stop":
+                    studio.stop(data["kind"])
+                    result = studio.snapshot()
+                elif path == "/api/connect":
                     if data.get("provider") == "pet":
-                        result = STUDIO.connect_pet()
+                        STUDIO.connect_pet()
+                        result = studio.snapshot()
+                    elif STUDIO.standalone and data.get("provider") == "viewerex":
+                        result = STUDIO.connect_imported_viewer()
                     else:
-                        was_pet = STUDIO.pet_linked
                         result = STUDIO.connect(bool(data.get("attach")))
-                        STUDIO.pet_linked = False
-                        if was_pet:
-                            try:
-                                desktop_pet.request("detach", port=PORT)
-                            except ConnectionError:
-                                pass
-                            STUDIO.emit("connection")
-                            result = STUDIO.snapshot()
-                elif self.path == "/api/disconnect-pet":
-                    if STUDIO.pet_linked:
-                        try:
-                            desktop_pet.request("detach", port=PORT)
-                        except ConnectionError:
-                            pass
-                        STUDIO.pet_linked = False
-                        STUDIO.emit("connection")
+                elif path == "/api/disconnect-viewer":
+                    STUDIO.disconnect_viewer()
                     result = STUDIO.snapshot()
-                elif self.path == "/api/thumbnail":
+                elif path == "/api/disconnect-pet":
+                    STUDIO.disconnect_pet()
+                    result = studio.snapshot()
+                elif path == "/api/thumbnail":
                     result = STUDIO.save_thumbnail(
                         data["role"], int(data["costume"]), data["image"]
                     )
-                elif self.path == "/api/menu":
+                elif path == "/api/menu":
                     if STUDIO.popup:
                         STUDIO.popup.show()
                     result = STUDIO.snapshot()
-                elif self.path == "/api/reset":
-                    result = STUDIO.reset()
+                elif path == "/api/reset":
+                    result = studio.reset()
                 else:
                     return self.respond(404, {"error": "操作不存在"})
             self.respond(200, result)

@@ -6,6 +6,8 @@ const directions = { body: "正面动作", left: "左向动作", right: "右向�
 const view = {
   library: [], catalog: null, state: null, tab: "action",
   onlyFavorites: false, favoriteCategory: "all", request: 0, model: null,
+  petWindow: document.documentElement.hasAttribute("data-desktop-pet"), modelSize: null,
+  viewerMode: Boolean(window.desktopPet) && new URLSearchParams(location.search).get("viewerex") === "1",
   app: null, mouthIds: [], mouth: 0, thumbnails: new Map(), visibleVoice: null,
   currentAction: null, currentExpression: null, modelKey: null, volume: null,
   switchingCostume: false, desiredCostume: null, modelReady: Promise.resolve(),
@@ -49,8 +51,8 @@ function toast(message) {
   toastTimer = setTimeout(() => $("#toast").classList.remove("visible"), 3300);
 }
 
-async function api(path, data) {
-  const response = await fetch(`/api/${path}`, data === undefined ? {} : {
+async function api(path, data, viewer = view.viewerMode) {
+  const response = await fetch(`/api/${path}${viewer ? "?viewerex=1" : ""}`, data === undefined ? {} : {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
     body: JSON.stringify(data),
@@ -421,15 +423,13 @@ function renderState() {
   $("#captions-toggle").checked = Boolean(settings.captions);
   $("#body-toggle").checked = Boolean(settings.bodyOnly);
   $("#click-through-toggle").checked = settings.preventClickThrough !== false;
-  $("#connect").classList.toggle("connected", view.state.linked);
-  $("#connect-label").textContent = view.state.linked ? "桌面已连接" : view.state.reconnecting ? "桌面重连中" : "连接桌面";
-  $("#connect").title = view.state.desktopProvider === "pet" ? "已连接独立桌宠" :
-    view.state.linked ? `控制桌面模型位 ${view.state.slot + 1}` : "连接所选桌面播放器";
-  if (window.desktopPet || !view.standalone) {
-    const exitPet = $("#exit-preview");
-    exitPet.textContent = "退出桌宠";
-    exitPet.hidden = view.petWindow || view.state.desktopProvider !== "pet";
-  }
+  const viewerButton = $("#connect");
+  viewerButton.classList.toggle("connected", view.state.viewerLinked);
+  viewerButton.setAttribute("aria-pressed", String(view.state.viewerLinked));
+  viewerButton.title = view.state.viewerLinked ? (view.standalone ? "断开 Live2DViewerEX 控制" : "已连接 Live2DViewerEX") : "连接 Live2DViewerEX";
+  const visibility = $("#pet-visibility");
+  visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
+  visibility.setAttribute("aria-pressed", String(view.state.petLinked));
   if (view.volume) view.volume.gain.value = view.state.linked ? 0 : 1;
   $("#game-name").textContent = view.catalog.game;
   $("#band-name").textContent = view.catalog.group.replace(/（Garupa）/g, "");
@@ -478,17 +478,21 @@ async function applySelection(state) {
 }
 
 function resetModelView() {
-  if (!view.model || !view.app) return;
-  const model = view.model;
+  if (!view.model) return;
+  const { model, modelSize } = view;
   const host = $("#canvas-host");
-  const width = host.clientWidth;
-  const height = host.clientHeight;
-  model.scale.set(1);
-  const bounds = model.getLocalBounds();
-  const scale = Math.min(width * .9 / bounds.width, height * .94 / bounds.height);
+  const { x, y, width, height } = view.sizePreview ?? { x: 0, y: 0, width: host.clientWidth, height: host.clientHeight };
+  const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height);
   model.scale.set(scale);
   model.anchor.set(.5, 1);
-  model.position.set(width / 2, height * .98);
+  model.position.set(x + width / 2, y + height * .98);
+}
+
+function disposeModels(models) {
+  for (const model of models) {
+    model.internalModel?.off("beforeModelUpdate", updateMouth);
+    model.destroy({ children: true });
+  }
 }
 
 function synchronizeMotionFades(model, metadata = {}) {
@@ -533,41 +537,44 @@ async function loadModel(key) {
   $("#model-loading").hidden = false;
   $("#stage-error").hidden = true;
   const host = $("#canvas-host");
-  view.model = null;
-  if (view.app) {
-    for (const model of view.app.stage.removeChildren()) {
-      model.internalModel?.off("beforeModelUpdate", updateMouth);
-      model.destroy({ children: true });
+  if (!view.petWindow) {
+    view.model = null;
+    if (view.app) {
+      disposeModels(view.app.stage.removeChildren());
+      view.app.renderer.clear();
     }
-    view.app.renderer.clear();
   }
   try {
     if (!window.PIXI?.live2d) throw new Error("Live2D 预览组件未载入");
     if (!view.app) {
-      view.app = new PIXI.Application({ resizeTo: host, backgroundAlpha: 0, clearBeforeRender: true, antialias: true, resolution: Math.min(devicePixelRatio, 2), autoDensity: true, preserveDrawingBuffer: true });
+      view.app = new PIXI.Application({
+        resizeTo: view.petWindow ? null : host,
+        width: host.clientWidth, height: host.clientHeight,
+        backgroundAlpha: 0, clearBeforeRender: true, antialias: true,
+        resolution: Math.min(devicePixelRatio, 2), autoDensity: true, preserveDrawingBuffer: true,
+      });
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
       view.app.renderer.textureGC.checkCountMax = 300;
-      if (view.petWindow) {
-        new ResizeObserver(() => {
-          view.app.resize();
-          resetModelView();
-        }).observe(host);
-      }
     }
-    const url = `/api/preview/${view.catalog.id}/${currentCostume().id}`;
+    const costume = currentCostume();
+    const url = `/api/preview/${view.catalog.id}/${costume.id}`;
     const metadata = await fetch(url).then((response) => response.json());
     metadata.url = location.origin + url;
     const model = await PIXI.live2d.Live2DModel.from(metadata, { autoInteract: false, motionPreload: "NONE" });
     synchronizeMotionFades(model, metadata);
     if (token !== view.request) { model.destroy({ children: true }); return; }
+    const outgoing = view.app.stage.removeChildren();
     view.model = model;
+    const { width, height } = model.getLocalBounds();
+    view.modelSize = { width, height };
     view.mouthIds = metadata.pageMouthIds || [];
     view.app.stage.addChild(model);
     model.autoInteract = false;
     resetModelView();
     model.internalModel.on("beforeModelUpdate", updateMouth);
     view.app.renderer.render(view.app.stage, { clear: true });
+    disposeModels(outgoing);
     host.onpointermove = (event) => {
       if (!view.model || !$("#model-loading").hidden) return;
       const rectangle = host.getBoundingClientRect();
@@ -579,7 +586,6 @@ async function loadModel(key) {
     };
     host.onpointerleave = () => view.model?.internalModel.focusController.focus(0, 0);
     host.onpointercancel = host.onpointerleave;
-    const costume = currentCostume();
     const regions = costume.hitRegions || {};
     let desktopMenu = regions.menu;
     if (view.petWindow && !costume.cubism3 && desktopMenu && regions.wardrobe &&
@@ -605,7 +611,7 @@ async function loadModel(key) {
     }
     let suppressClick = false;
     if (view.petWindow) {
-      let drag, previousHit;
+      let drag, previousHit, previousPoint, lastPixelRead = 0, zoomActiveUntil = 0;
       const pixel = new Uint8Array(4);
       const setHit = (hit) => {
         if (hit === previousHit) return;
@@ -614,11 +620,18 @@ async function loadModel(key) {
       };
       const cursor = (point) => {
         const { gl } = view.app.renderer;
-        if (drag) return setHit(true);
-        if (!point || !view.model || !gl) return setHit(false);
+        if (drag || performance.now() < zoomActiveUntil) return setHit(true);
+        if (!point || !view.model || !gl) {
+          previousPoint = undefined;
+          return setHit(false);
+        }
+        const now = performance.now();
         const x = Math.floor(point.x * view.app.renderer.resolution);
         const y = gl.drawingBufferHeight - 1 - Math.floor(point.y * view.app.renderer.resolution);
         if (x < 0 || y < 0 || x >= gl.drawingBufferWidth || y >= gl.drawingBufferHeight) return setHit(false);
+        if (previousPoint?.x === x && previousPoint.y === y && now - lastPixelRead < 150) return;
+        previousPoint = { x, y };
+        lastPixelRead = now;
         gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
         setHit(pixel[3] > 8 || Boolean(hitRegion({ clientX: point.x, clientY: point.y })));
       };
@@ -653,8 +666,11 @@ async function loadModel(key) {
       host.onwheel = (event) => {
         if (!event.ctrlKey) return;
         event.preventDefault();
-        if (drag) return;
-        window.desktopPet.zoom(-event.deltaY);
+        if (drag || !event.deltaY) return;
+        zoomActiveUntil = performance.now() + 180;
+        const steps = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? event.deltaY / 100 :
+          event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY / 3 : event.deltaY;
+        window.desktopPet.zoom(-steps);
       };
       host.oncontextmenu = (event) => {
         event.preventDefault();
@@ -845,7 +861,7 @@ async function applyPlay(data) {
   const { kind, item } = data;
   if (data.costume !== undefined && data.costume !== currentCostume().id) return;
   if (kind === "voice") {
-    if (view.state.desktopProvider === "pet" && !view.petWindow) return;
+    if ((view.state.desktopProvider === "pet" && !view.petWindow) || (view.viewerMode && view.state.viewerLinked)) return;
     const generation = ++audioGeneration;
     audio.pause();
     audio.src = asset(item.file);
@@ -941,15 +957,18 @@ async function boot() {
   const mode = await api("mode");
   view.standalone = mode.standalone;
   const query = new URLSearchParams(location.search);
-  view.petWindow = query.get("pet") === "1" && Boolean(window.desktopPet);
-  document.body.classList.toggle("desktop-pet", view.petWindow);
-  $("#desktop-provider").hidden = view.standalone || view.petWindow;
   view.library = await api("library");
-  view.state = await api("state");
+  try {
+    view.state = await api("state");
+  } catch (error) {
+    if (!view.viewerMode) throw error;
+    location.replace("/");
+    return;
+  }
+  const desktopControls = !view.petWindow && (!view.standalone || Boolean(window.desktopPet)) && Boolean(view.state.role);
+  $("#connect").hidden = $("#pet-visibility").hidden = !desktopControls;
   if (view.standalone) {
     document.body.classList.add("standalone-preview");
-    $("#connect").hidden = !window.desktopPet || view.petWindow || !view.state.role;
-    if (window.desktopPet) $("#desktop-provider").value = "pet";
     $("#exit-preview").hidden = Boolean(window.desktopPet);
     $(".breadcrumb").hidden = !view.state.role;
     $("#import-role").hidden = !view.state.role;
@@ -964,7 +983,7 @@ async function boot() {
     view.state = await api("connect", { attach: true });
   }
   await applySelection(view.state);
-  const events = new EventSource("/api/events");
+  const events = new EventSource(view.viewerMode ? "/api/events?viewerex=1" : "/api/events");
   view.events = events;
   let eventQueue = Promise.resolve();
   const handleEvent = async (message) => {
@@ -992,18 +1011,13 @@ async function boot() {
     const state = await api("state");
     await applySelection(state);
   });
-  events.onerror = () => { $("#connect-label").textContent = "页面连接恢复中"; };
+  events.onerror = () => { $("#connect").title = "页面连接恢复中"; };
 }
 
 for (const id of ["#import-first-role", "#import-role"]) {
   $(id).addEventListener("click", () => $("#role-zip").click());
 }
 $("#exit-preview").addEventListener("click", safely(async () => {
-  if (view.state.desktopProvider === "pet") {
-    view.state = await api("disconnect-pet", {});
-    renderState();
-    return;
-  }
   await api("exit", {});
   view.events?.close();
   audio.pause();
@@ -1092,9 +1106,22 @@ for (const [id, key] of [["#captions-toggle", "captions"], ["#body-toggle", "bod
 $("#connect").addEventListener("click", safely(async () => {
   const button = $("#connect");
   button.disabled = true;
-  $("#connect-label").textContent = "正在连接桌面";
   try {
-    view.state = await api("connect", { provider: $("#desktop-provider").value });
+    if (view.standalone && view.state.viewerLinked) {
+      await api("disconnect-viewer", {}, false);
+      location.replace("/");
+    } else {
+      const state = await api("connect", { provider: "viewerex", attach: true }, false);
+      if (view.standalone) location.replace("/?viewerex=1");
+      else view.state = state;
+    }
+  } finally { button.disabled = false; renderState(); }
+}));
+$("#pet-visibility").addEventListener("click", safely(async () => {
+  const button = $("#pet-visibility");
+  button.disabled = true;
+  try {
+    view.state = view.state.petLinked ? await api("disconnect-pet", {}) : await api("connect", { provider: "pet" });
   } finally { button.disabled = false; renderState(); }
 }));
 $("#stop-all").addEventListener("click", safely(stopAll));
@@ -1120,7 +1147,20 @@ document.addEventListener("keydown", (event) => {
 });
 audio.addEventListener("ended", () => { view.visibleVoice = null; updateSubtitle(); updatePlaying(); renderItems(); });
 audio.addEventListener("error", () => { if (audio.src) toast("语音载入失败，请重试"); });
-new ResizeObserver(resetModelView).observe($("#canvas-host"));
+new ResizeObserver(([{ target }]) => {
+  if (view.petWindow && view.app && target.clientWidth && target.clientHeight) {
+    view.app.renderer.resize(target.clientWidth, target.clientHeight);
+  }
+  resetModelView();
+}).observe($("#canvas-host"));
+if (view.petWindow) {
+  let pendingSizeFrame;
+  window.desktopPet.watchSize((bounds) => {
+    view.sizePreview = bounds;
+    if (pendingSizeFrame) return;
+    pendingSizeFrame = requestAnimationFrame(() => { pendingSizeFrame = null; resetModelView(); });
+  });
+}
 new ResizeObserver(updateTabIndicator).observe($(".tabs"));
 document.fonts.ready.then(updateTabIndicator);
 boot().catch((error) => toast(error.message));
