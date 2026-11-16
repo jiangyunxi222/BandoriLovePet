@@ -9,12 +9,13 @@ internal static class PetWindow
     [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string windowClass, string caption);
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
-    private const uint NoSize = 0x01, NoMove = 0x02, NoActivate = 0x10, NoOwnerZOrder = 0x200;
+    private const uint NoSize = 0x01, NoMove = 0x02, NoZOrder = 0x04, NoActivate = 0x10, NoOwnerZOrder = 0x200;
     private const uint NextWindow = 2;
     private const int ExtendedStyle = -20, TopmostStyle = 0x08;
     private static readonly IntPtr Topmost = new IntPtr(-1), NotTopmost = new IntPtr(-2), Bottom = new IntPtr(1);
@@ -53,11 +54,22 @@ internal static class PetWindow
         if (args.Length != 2 || !long.TryParse(args[0], out handle) || !uint.TryParse(args[1], out parent)) return 2;
         IntPtr window = new IntPtr(handle);
         if (GetWindowThreadProcessId(window, out owner) == 0 || owner != parent) return 2;
+        SetProcessDpiAwarenessContext(new IntPtr(-4)); // Use physical pixels for Electron's screen coordinates.
 
         string input;
         while ((input = Console.ReadLine()) != null && GetWindowThreadProcessId(window, out owner) != 0 && owner == parent)
         {
-            if (input == "top" || input == "bottom") ChooseLayer(window, input == "top");
+            if (input == "top" || input == "bottom")
+            {
+                ChooseLayer(window, input == "top");
+                continue;
+            }
+            string[] fields = input.Split(' ');
+            int x, y;
+            const uint flags = NoActivate | NoZOrder | NoOwnerZOrder;
+            if (fields.Length == 3 && fields[0] == "move" &&
+                int.TryParse(fields[1], out x) && int.TryParse(fields[2], out y))
+                SetWindowPos(window, IntPtr.Zero, x, y, 0, 0, flags | NoSize);
         }
         return 0;
     }

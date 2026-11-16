@@ -44,9 +44,25 @@ def install_runtime(scripts, output):
             raise ValueError("角色包的 Live2D 网页运行库版本不受支持")
     output.mkdir(parents=True, exist_ok=True)
     for name, data in scripts.items():
+        installed = output / name
+        if installed.is_file():
+            with installed.open("rb") as stream:
+                if stream.read(len(data) + 1) == data:
+                    continue
         temporary = output / (name + ".tmp")
         temporary.write_bytes(data)
-        temporary.replace(output / name)
+        temporary.replace(installed)
+
+
+def require_cached_runtime(folder):
+    for name, digest in RUNTIMES.items():
+        try:
+            with (folder / name).open("rb") as stream:
+                valid = hashlib.sha256(stream.read(512_001)).hexdigest() == digest
+        except OSError:
+            valid = False
+        if not valid:
+            raise ValueError("首次预览普通 Live2D 模型前，请先导入一次完整的 BandoriLove 角色包以载入运行库")
 
 
 def request(operation, **payload):

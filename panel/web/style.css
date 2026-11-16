@@ -327,6 +327,8 @@ html[data-desktop-pet] .studio-layout, html[data-desktop-pet] .stage, html[data-
   padding: 0;
 }
 html[data-desktop-pet] .studio-layout { display: block; }
+html[data-render-only]:not([data-desktop-pet]) .studio-layout { grid-template-columns: minmax(0, 1fr); }
+html[data-render-only] :is(.breadcrumb, .control-panel, .bottom-bar) { display: none; }
 html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .stage-orbit, .stage-spark, .stage-label) {
   display: none;
 }

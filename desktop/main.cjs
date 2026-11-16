@@ -2,7 +2,8 @@ const { app, BrowserWindow, Tray, ipcMain, screen, dialog, nativeImage } = requi
 const { spawn } = require("node:child_process");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
 const { createServer } = require("node:http");
-const { createReadStream, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } = require("node:fs");
+const { readFileSync, writeFileSync, mkdirSync, rmSync } = require("node:fs");
+const { setTimeout: delay } = require("node:timers/promises");
 const path = require("node:path");
 
 const home = path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BandoriLoveDesktopPet");
@@ -16,7 +17,7 @@ mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
 let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
-let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer, fitPetTimer;
+let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
@@ -78,7 +79,9 @@ function showManager(port = selectedPort || ownPort, viewer = false) {
 }
 
 function windowCommand(command) {
-  if (petWindowProcess?.stdin.writable) petWindowProcess.stdin.write(`${command}\n`);
+  if (!petWindowProcess?.stdin.writable) return false;
+  petWindowProcess.stdin.write(`${command}\n`);
+  return true;
 }
 
 function applyPetLayer() {
@@ -88,6 +91,7 @@ function applyPetLayer() {
 }
 
 function showPet(port) {
+  if (selectedPort === port && pet && !pet.isDestroyed() && pet.webContents.getURL()) return;
   selectedPort = port;
   if (!pet || pet.isDestroyed()) {
     const primary = screen.getPrimaryDisplay();
@@ -100,11 +104,12 @@ function showPet(port) {
       y: bounds.y + bounds.height,
       height: Math.min(maximumPetHeight(display.workArea), Math.max(180, bounds.height)),
     };
-    petScene.surface = paddedPetBounds(petBounds());
+    petScene.surface = petViewportBounds();
     pet = new BrowserWindow({
       ...petScene.surface, show: false, transparent: true, frame: false, resizable: false,
       backgroundColor: "#00000000",
       title: "BandoriLove 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
+      alwaysOnTop: preferences.layer === "top",
       webPreferences: windowOptions,
     });
     pet.on("page-title-updated", (event) => event.preventDefault());
@@ -131,85 +136,103 @@ function showPet(port) {
     pet.on("closed", () => {
       clearInterval(cursorTimer);
       clearTimeout(saveBoundsTimer);
-      clearTimeout(fitPetTimer);
+      clearTimeout(petDrag?.timer);
       petScene = petDrag = null;
       nativeWindow.stdin.end();
       pet = petWindowProcess = selectedPort = null;
       trayMenu?.close();
     });
   }
-  pet.loadURL(base(port) + "/?pet=1").then(() => {
-    if (pet && !pet.isDestroyed()) {
-      sendPetFrame();
-      pet.setIgnoreMouseEvents(true);
-      pet.showInactive();
-      applyPetLayer();
+  const window = pet;
+  const navigation = (petScene.navigation ?? 0) + 1;
+  petScene.navigation = navigation;
+  if (window.isVisible()) window.hide();
+  window.setIgnoreMouseEvents(true);
+  window.loadURL(base(port) + "/?pet=1").then(() => {
+    // Legacy role panels do not send the first-frame notification.
+    if (window === pet && port !== ownPort && petScene.navigation === navigation) void revealPet();
+  }).catch((error) => {
+    if (window === pet && port === selectedPort && error.code !== "ERR_ABORTED") window.close();
+  });
+}
+
+async function revealPet() {
+  if (!pet || pet.isVisible()) return;
+  const window = pet;
+  const scene = petScene;
+  const navigation = scene.navigation;
+  if (scene.revealing === navigation) return;
+  scene.revealing = navigation;
+  const deadline = Date.now() + 450;
+  try {
+    while (window === pet && navigation === scene.navigation && Date.now() < deadline) {
+      // Let Chromium paint for the capture while the native window remains hidden.
+      const image = await Promise.race([window.capturePage(), delay(Math.max(0, deadline - Date.now()))]);
+      if (!image || frameHasVisiblePixels(image)) break;
+      await delay(24);
     }
-  }).catch(() => {});
+  } catch { /* The renderer has already submitted its first frame. */ }
+  if (window !== pet || navigation !== scene.navigation || window.isDestroyed()) return;
+  applyPetLayer();
+  window.showInactive();
+  if (preferences.layer === "bottom") windowCommand("bottom");
+}
+
+function frameHasVisiblePixels(image) {
+  const pixels = image.toBitmap();
+  for (let alpha = 3; alpha < pixels.length; alpha += 4) {
+    if (pixels[alpha] > 16) return true;
+  }
+  return false;
 }
 
 function maximumPetHeight(area) {
   return Math.min(1200, area.height, Math.floor(area.width / 0.745));
 }
 
-function petBounds() {
-  const { x: center, y: foot, display, height: size } = petScene;
-  const { workArea } = display;
+function petBounds(size = petScene.height) {
+  const { x, y: foot, display: { workArea } } = petScene;
   const height = Math.round(size);
   const width = Math.round(height * 0.745);
-  const frame = { x: Math.round(center - width / 2), y: Math.round(foot - height), width, height };
-  return petDrag?.moved ? frame : fitInWorkArea(frame, workArea);
+  const y = foot - height / 2;
+  // Allow the frame to overhang a screen edge while leaving its center reachable.
+  const centerX = petDrag?.moved ? x : Math.max(workArea.x, Math.min(workArea.x + workArea.width - 1, x));
+  const centerY = petDrag?.moved ? y : Math.max(workArea.y, Math.min(workArea.y + workArea.height - 1, y));
+  return { x: Math.round(centerX - width / 2), y: Math.round(centerY - height / 2), width, height };
 }
 
-function fitInWorkArea(bounds, workArea) {
-  const width = Math.min(bounds.width, workArea.width);
-  const height = Math.min(bounds.height, workArea.height);
-  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, bounds.x));
-  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, bounds.y));
-  return { x, y, width, height };
+function petViewportBounds() {
+  const { workArea } = petScene.display;
+  // Reserve the full zoom range so changing the scale never resizes the layered HWND.
+  const frame = petBounds(maximumPetHeight(workArea));
+  const side = Math.min(Math.floor((workArea.width - frame.width) / 2), Math.max(52, Math.ceil(frame.width * .14)));
+  return { x: frame.x - side, y: frame.y, width: frame.width + side * 2, height: frame.height };
 }
 
-function paddedPetBounds(frame) {
-  const side = Math.max(52, Math.ceil(frame.width * .2));
-  const top = Math.max(64, Math.ceil(frame.height * .18));
-  const bottom = Math.max(36, Math.ceil(frame.height * .1));
-  return fitInWorkArea({
-    x: frame.x - side, y: frame.y - top, width: frame.width + side * 2, height: frame.height + top + bottom,
-  }, petScene.display.workArea);
-}
-
-function movePetSurface(bounds) {
+function movePetSurface(bounds, publish = true) {
   const previous = petScene.surface;
-  if (previous.width !== bounds.width || previous.height !== bounds.height) pet.setBounds(bounds);
-  else if (previous.x !== bounds.x || previous.y !== bounds.y) pet.setPosition(bounds.x, bounds.y);
   petScene.surface = bounds;
+  if (publish) sendPetFrame();
+  if (previous.width !== bounds.width || previous.height !== bounds.height) {
+    pet.setBounds(bounds);
+  } else if (previous.x !== bounds.x || previous.y !== bounds.y) {
+    const point = screen.dipToScreenPoint({ x: bounds.x, y: bounds.y });
+    if (!windowCommand(`move ${point.x} ${point.y}`)) pet.setPosition(bounds.x, bounds.y);
+  }
 }
 
 function fitPetSurface() {
-  clearTimeout(fitPetTimer);
   if (!petScene || petDrag?.moved) return;
-  movePetSurface(paddedPetBounds(petBounds()));
-  sendPetFrame();
-}
-
-function expandPetSurface(frame) {
-  const surface = petScene.surface;
-  if (frame.x >= surface.x && frame.y >= surface.y &&
-      frame.x + frame.width <= surface.x + surface.width &&
-      frame.y + frame.height <= surface.y + surface.height) return;
-  const padded = paddedPetBounds(frame);
-  const x = Math.min(surface.x, padded.x);
-  const y = Math.min(surface.y, padded.y);
-  movePetSurface(fitInWorkArea({
-    x, y, width: Math.max(surface.x + surface.width, padded.x + padded.width) - x,
-    height: Math.max(surface.y + surface.height, padded.y + padded.height) - y,
-  }, petScene.display.workArea));
+  movePetSurface(petViewportBounds());
 }
 
 function petFrame() {
   const { surface } = petScene;
   const { x, y, width, height } = petBounds();
-  return { x: x - surface.x, y: y - surface.y, width, height, originX: surface.x, originY: surface.y };
+  return {
+    x: x - surface.x, y: y - surface.y, width, height,
+    originX: surface.x, originY: surface.y, surfaceWidth: surface.width, surfaceHeight: surface.height,
+  };
 }
 
 function sendPetFrame(animate = false) {
@@ -219,11 +242,8 @@ function sendPetFrame(animate = false) {
 function setPetHeight(height, animate) {
   if (!petScene || petDrag?.moved) return;
   petScene.height = Math.min(maximumPetHeight(petScene.display.workArea), Math.max(180, height));
-  expandPetSurface(petBounds());
   sendPetFrame(animate);
   scheduleBoundsSave();
-  clearTimeout(fitPetTimer);
-  if (animate) fitPetTimer = setTimeout(fitPetSurface, 260);
 }
 
 function usePetDisplay(display) {
@@ -232,10 +252,15 @@ function usePetDisplay(display) {
 }
 
 function finishPetDrag() {
+  clearTimeout(petDrag?.timer);
+  if (petDrag?.pending) movePet(petDrag.pending);
   const finalFrame = petDrag?.moved ? petBounds() : null;
   petDrag = null;
   if (!finalFrame) return;
-  usePetDisplay(screen.getDisplayMatching(finalFrame));
+  usePetDisplay(screen.getDisplayNearestPoint({
+    x: Math.round(finalFrame.x + finalFrame.width / 2),
+    y: Math.round(finalFrame.y + finalFrame.height / 2),
+  }));
   const { x, y, width, height } = petBounds();
   petScene.x = x + width / 2;
   petScene.y = y + height;
@@ -243,15 +268,26 @@ function finishPetDrag() {
   scheduleBoundsSave();
 }
 
-function movePet(x, y) {
+function queuePetMove(point) {
+  const drag = petDrag;
+  drag.pending = point;
+  if (drag.timer) return;
+  drag.timer = setTimeout(() => {
+    drag.timer = null;
+    if (petDrag !== drag) return;
+    movePet(drag.pending);
+    drag.pending = null;
+  }, 16);
+}
+
+function movePet({ x, y }) {
   const dx = x - petDrag.pointerX;
   const dy = y - petDrag.pointerY;
   petDrag.moved = true;
   petScene.x = petDrag.x + dx;
   petScene.y = petDrag.y + dy;
   const { surface } = petDrag;
-  movePetSurface({ ...surface, x: surface.x + dx, y: surface.y + dy });
-  sendPetFrame();
+  movePetSurface({ ...surface, x: surface.x + dx, y: surface.y + dy }, false);
 }
 
 function showTrayMenu(bounds) {
@@ -272,10 +308,7 @@ function showTrayMenu(bounds) {
   popup.webContents.on("will-navigate", (event) => event.preventDefault());
   popup.on("blur", () => popup.close());
   popup.on("closed", () => {
-    if (trayMenu === popup) {
-      trayMenu = null;
-      fitPetSurface();
-    }
+    if (trayMenu === popup) trayMenu = null;
   });
   popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
   popup.loadFile(path.join(__dirname, "tray-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
@@ -345,20 +378,14 @@ async function toggleTrayPet() {
 }
 
 async function importRole(file) {
-  const zip = path.extname(file).toLowerCase() === ".zip";
-  const headers = { "X-Studio-Request": "1" };
-  let body;
-  if (zip) {
-    headers["Content-Type"] = "application/zip";
-    headers["Content-Length"] = String(statSync(file).size);
-    body = createReadStream(file);
-  } else {
-    headers["Content-Type"] = "application/json";
-    headers.Authorization = `Bearer ${roleImportToken}`;
-    body = JSON.stringify({ entry: file });
-  }
-  const response = await fetch(`${base(ownPort)}/api/${zip ? "import" : "import-folder"}`, {
-    method: "POST", headers, body, duplex: "half",
+  const response = await fetch(`${base(ownPort)}/api/import-folder`, {
+    method: "POST",
+    headers: {
+      "X-Studio-Request": "1",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${roleImportToken}`,
+    },
+    body: JSON.stringify({ entry: file }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "无法导入角色包");
@@ -441,12 +468,13 @@ function installHandlers() {
   ipcMain.handle("pet:pick-role", async (event) => {
     if (event.sender !== manager?.webContents || managerPort !== ownPort) return false;
     const { canceled, filePaths } = await dialog.showOpenDialog(manager, {
-      title: "选择角色 ZIP 或解压目录中的父模型",
+      title: "选择模型",
       properties: ["openFile"],
       filters: [
-        { name: "角色 ZIP 或父模型 JSON", extensions: ["zip", "json"] },
+        { name: "角色包和模型", extensions: ["zip", "json", "lpk", "wpk"] },
         { name: "单角色 ZIP", extensions: ["zip"] },
-        { name: "父模型 JSON", extensions: ["json"] },
+        { name: "Live2D 模型 JSON", extensions: ["json"] },
+        { name: "ViewerEX 模型包", extensions: ["lpk", "wpk"] },
       ],
     });
     if (canceled) return false;
@@ -464,6 +492,9 @@ function installHandlers() {
   ipcMain.on("pet:panel", (event) => {
     if (event.sender === pet?.webContents) showManager();
   });
+  ipcMain.on("pet:first-frame", (event) => {
+    if (event.sender === pet?.webContents && event.senderFrame?.url === base(selectedPort) + "/?pet=1") void revealPet();
+  });
   ipcMain.on("pet:hit", (event, hit) => {
     if (event.sender === pet?.webContents) pet.setIgnoreMouseEvents(hit !== true);
   });
@@ -474,15 +505,15 @@ function installHandlers() {
       return;
     }
     if (!["begin", "move"].includes(operation)) return;
-    const { x, y } = screen.getCursorScreenPoint();
+    const point = screen.getCursorScreenPoint();
     if (operation === "begin") {
       const bounds = petBounds();
       petDrag = {
-        pointerX: x, pointerY: y, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height,
+        pointerX: point.x, pointerY: point.y, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height,
         surface: petScene.surface, moved: false,
       };
     }
-    if (operation === "move" && petDrag) movePet(x, y);
+    if (operation === "move" && petDrag) queuePetMove(point);
   });
   ipcMain.on("pet:zoom", (event, steps) => {
     if (event.sender !== pet?.webContents || !petScene || !Number.isFinite(steps)) return;
@@ -506,7 +537,6 @@ function installHandlers() {
   });
   ipcMain.on("pet:size:commit", (event) => {
     if (event.sender !== trayMenu?.webContents) return;
-    fitPetSurface();
     savePetBounds();
   });
   ipcMain.on("tray:action", (event, action) => {

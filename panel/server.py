@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import voice_library
 import role_package
+import viewer_package
 import desktop_pet
 from model_watch import (
     claim_role_controller, endpoint_for, endpoint_record, instance_id, release_instance, restore_role_menu, viewer_bin,
@@ -249,6 +250,7 @@ class Studio:
         self.import_lock = threading.Lock()
         self.active_package = None
         self.folder_assets = None
+        self.plain_preview = None
         self.changed = threading.Condition(self.lock)
         self.events = []
         self.sequence = 0
@@ -332,9 +334,7 @@ class Studio:
                     stream.write(chunk)
                     remaining -= len(chunk)
             root = folder / "role"
-            role, catalog = role_package.extract(archive, root)
-            if WEB != HERE / "web":
-                desktop_pet.import_runtime(archive, HERE / ".local/runtime")
+            role, catalog = self.read_role_archive(archive, root)
             archive.unlink()
             previous = self.activate_role(root, role, catalog, temporary=staged)
             staged = None
@@ -345,19 +345,54 @@ class Studio:
                 staged.cleanup()
             self.import_lock.release()
 
-    def import_role_folder(self, entry):
+    def read_role_archive(self, archive, root):
+        role, catalog = role_package.extract(archive, root)
+        if WEB != HERE / "web":
+            desktop_pet.import_runtime(archive, HERE / ".local/runtime")
+        return role, catalog
+
+    def import_selected_model(self, entry):
         if not self.standalone or not self.import_lock.acquire(blocking=False):
             raise ValueError("另一个角色包正在加载")
+        staged = None
         try:
-            root, role, catalog, assets = role_package.inspect_folder(entry)
-            desktop_pet.import_folder_runtime(root, HERE / ".local/runtime")
-            previous = self.activate_role(root, role, catalog, folder_assets=assets)
+            if not entry.is_absolute() or not entry.is_file():
+                raise ValueError("请选择本机的 Live2D 模型文件")
+            runtime = HERE / ".local/runtime"
+            assets = None
+            plain_preview = None
+            suffix = entry.suffix.lower()
+            if suffix == ".zip":
+                if not 0 < entry.stat().st_size <= role_package.MAX_BYTES:
+                    raise ValueError("请选择不超过 2 GB 的角色 ZIP")
+                staged = tempfile.TemporaryDirectory(prefix="BandoriLove-role-", ignore_cleanup_errors=True)
+                root = Path(staged.name) / "role"
+                role, catalog = self.read_role_archive(entry, root)
+            elif suffix in {".lpk", ".wpk"}:
+                desktop_pet.require_cached_runtime(runtime)
+                staged = tempfile.TemporaryDirectory(prefix="BandoriLove-viewer-package-", ignore_cleanup_errors=True)
+                destination = Path(staged.name) / "preview"
+                loader = viewer_package.wpk_preview if suffix == ".wpk" else viewer_package.lpk_preview
+                preview_entry, title = loader(entry, destination)
+                root, role, catalog, assets, plain_preview = role_package.inspect_plain_model(preview_entry)
+                name = title.strip()[:120] if title and title.strip() else entry.stem
+                role["name"] = catalog["name"] = catalog["costumes"][0]["name"] = name
+            elif suffix == ".json" and role_package.is_indexed_folder(entry.parent):
+                root, role, catalog, assets = role_package.inspect_folder(entry)
+                desktop_pet.import_folder_runtime(root, runtime)
+            else:
+                root, role, catalog, assets, plain_preview = role_package.inspect_plain_model(entry)
+                desktop_pet.require_cached_runtime(runtime)
+            previous = self.activate_role(root, role, catalog, temporary=staged, folder_assets=assets, plain_preview=plain_preview)
+            staged = None
             if previous is not None:
                 previous.cleanup()
         finally:
+            if staged is not None:
+                staged.cleanup()
             self.import_lock.release()
 
-    def activate_role(self, root, role, catalog, *, temporary=None, folder_assets=None):
+    def activate_role(self, root, role, catalog, *, temporary=None, folder_assets=None, plain_preview=None):
         with self.lock:
             previous = self.active_package
             self.disconnect_viewer()
@@ -383,6 +418,7 @@ class Studio:
             self.catalogs = {self.current: catalog}
             self.active_package = temporary
             self.folder_assets = folder_assets
+            self.plain_preview = plain_preview
             return previous
 
     def catalog(self, role_id=None):
@@ -478,6 +514,7 @@ class Studio:
         return {
             "instance": instance_id(HERE),
             "role": self.current,
+            "renderOnly": self.plain_preview is not None,
             "settings": copy.deepcopy(self.settings()) if self.current else {},
             "linked": controlling_viewer or controlling_pet,
             "petLinked": owner.pet_linked,
@@ -811,6 +848,8 @@ class Studio:
 
     def connect_imported_viewer(self):
         """Attach to the same integrated entry already loaded in ViewerEX."""
+        if self.plain_preview is not None:
+            raise ValueError("普通 Live2D 模型仅支持预览和独立桌宠")
         entry = self.catalog()["entry"]
         expected = (self.root() / entry).read_bytes()
         slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
@@ -1572,6 +1611,8 @@ class Studio:
     def preview(self, role_id, costume_id):
         role = self.catalog(role_id)
         costume = next(c for c in role["costumes"] if c["id"] == costume_id)
+        if role.get("renderOnly"):
+            return self.plain_preview
         root = self.root(role_id)
         path = role_package.folder_file(root, costume["file"]) if self.folder_assets is not None else root / costume["file"]
         model = read(path)
@@ -1724,9 +1765,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, STUDIO.preview(role_id, int(costume_id)))
             if path.startswith("/assets/"):
                 _, _, role_id, relative = path.split("/", 3)
-                if STUDIO.standalone and not role_package.preview_asset(relative):
-                    raise ValueError("资源不存在")
                 with STUDIO.lock:
+                    if STUDIO.standalone and STUDIO.plain_preview is None and not role_package.preview_asset(relative):
+                        raise ValueError("资源不存在")
                     if STUDIO.folder_assets is not None and relative not in STUDIO.folder_assets:
                         raise ValueError("资源不存在")
                     root = STUDIO.root(role_id)
@@ -1818,14 +1859,15 @@ class Handler(BaseHTTPRequestHandler):
                 supplied = self.headers.get("Authorization", "")
                 if (not STUDIO.standalone or origin is not None or not token
                         or not secrets.compare_digest(supplied.encode(), f"Bearer {token}".encode())):
-                    return self.respond(403, {"error": "请通过桌宠程序选择父模型文件"})
+                    return self.respond(403, {"error": "请通过桌宠程序选择模型文件"})
                 if not 0 < length <= 131072:
-                    raise ValueError("父模型路径无效")
+                    raise ValueError("模型文件路径无效")
                 try:
                     entry = json.loads(self.rfile.read(length))["entry"]
-                    STUDIO.import_role_folder(Path(entry))
-                except (AttributeError, IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
-                    raise ValueError("无法读取角色目录，请选择完整角色包的父模型 JSON") from error
+                    STUDIO.import_selected_model(Path(entry))
+                except (zipfile.BadZipFile, NotImplementedError, RuntimeError, AttributeError, IndexError,
+                        KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError("无法读取模型文件，或模型包与其配置不匹配") from error
                 return self.respond(200, {"imported": True})
             if path == "/api/exit" and STUDIO.standalone:
                 with STUDIO.lock:
@@ -1861,6 +1903,10 @@ class Handler(BaseHTTPRequestHandler):
                 studio = STUDIO.viewer_session if request.query == "viewerex=1" else STUDIO
                 if studio is None:
                     raise ValueError("请先连接 Live2DViewerEX")
+                if studio.plain_preview is not None and path in (
+                    "/api/select", "/api/operate", "/api/preference", "/api/favorite", "/api/stop", "/api/reset"
+                ):
+                    raise ValueError("普通 Live2D 模型仅支持预览和独立桌宠")
                 if studio.viewer_owner and (not studio.linked or not studio.player.socket) and path in (
                     "/api/select", "/api/operate", "/api/preference", "/api/favorite", "/api/stop", "/api/reset"
                 ):

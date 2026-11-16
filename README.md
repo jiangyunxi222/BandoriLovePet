@@ -3,10 +3,14 @@
 Windows 版独立 Live2D 桌宠，支持 BandoriLove 的 Garupa 与 OurNotes 单角色发行 ZIP。
 
 1. 下载并运行 `setup.exe`。
-2. 在开始菜单打开 BandoriLove Desktop Pet，选择单角色 ZIP，或解压后角色目录里的 `00_integrated.model3.json` / `00_integrated.model.json`。直接选择父模型时，软件会从原目录读取资源。请保留角色目录内的资源和索引。
+2. 在开始菜单打开 BandoriLove Desktop Pet，选择单角色 ZIP、Live2D 模型 JSON，或 ViewerEX 的 LPK、WPK。直接选择 JSON 时，软件会从原目录读取资源。
 3. 点击「显示桌宠」。关闭面板窗口后，桌宠保持显示。
 
-按住角色用左键拖动，Ctrl 加滚轮缩放。右键或点击腿部菜单区打开面板。右键托盘 b* 图标后，可以直接拖动菜单里的「桌宠大小」滑杆。
+BandoriLove 角色请保留 `00_integrated.model3.json` 或 `00_integrated.model.json` 及其角色索引和素材，会加载完整的角色控制台。普通 Live2D JSON 仅提供模型预览、显示和退出桌宠。全新安装首次使用普通 JSON 前，请先导入一次完整的 BandoriLove 角色包，载入 Web 运行库。
+
+LPK、WPK 会用包内第一个可渲染的 Live2D 模型提供同样的预览和桌宠功能。单独导入创意工坊 LPK 时，请把对应的 `config.json` 放在同目录。完整 WPK 自带配置。
+
+按住角色用左键拖动，Shift 加滚轮缩放。右键或点击腿部菜单区打开面板。右键托盘 b* 图标后，可以直接拖动菜单里的「桌宠大小」滑杆。
 
 托盘菜单可选「浮于最上层」或「浮于最下层」，应用会记住选择。最下层仍显示在桌面上，其他应用窗口可以盖住角色。
 

@@ -4,7 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const labels = { action: "动作", expression: "表情", costume: "衣装", voice: "语音", favorites: "收藏" };
 const directions = { body: "正面动作", left: "左向动作", right: "右向动作", other: "其他动作" };
 const view = {
-  library: [], catalog: null, state: null, tab: "action",
+  catalog: null, state: null, tab: "action", importRevision: 0,
   onlyFavorites: false, favoriteCategory: "all", request: 0, model: null,
   petWindow: document.documentElement.hasAttribute("data-desktop-pet"), modelSize: null,
   viewerMode: Boolean(window.desktopPet) && new URLSearchParams(location.search).get("viewerex") === "1",
@@ -419,6 +419,16 @@ function renderItems() {
 
 function renderState() {
   if (!view.state || !view.catalog) return;
+  const renderOnly = view.catalog.renderOnly === true;
+  document.documentElement.toggleAttribute("data-render-only", renderOnly);
+  const visibility = $("#pet-visibility");
+  visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
+  visibility.setAttribute("aria-pressed", String(view.state.petLinked));
+  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLove";
+  if (renderOnly) {
+    $("#connect").hidden = true;
+    return;
+  }
   const settings = view.state.settings;
   $("#captions-toggle").checked = Boolean(settings.captions);
   $("#body-toggle").checked = Boolean(settings.bodyOnly);
@@ -426,13 +436,9 @@ function renderState() {
   const viewerButton = $("#connect");
   viewerButton.setAttribute("aria-pressed", String(view.state.viewerLinked));
   viewerButton.title = view.state.viewerLinked ? (view.standalone ? "断开 Live2DViewerEX 控制" : "已连接 Live2DViewerEX") : "连接 Live2DViewerEX";
-  const visibility = $("#pet-visibility");
-  visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
-  visibility.setAttribute("aria-pressed", String(view.state.petLinked));
   syncVoiceVolume();
   $("#game-name").textContent = view.catalog.game;
   $("#band-name").textContent = view.catalog.group.replace(/（Garupa）/g, "");
-  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLove";
   renderItems();
   updatePlaying();
   updateSubtitle();
@@ -461,18 +467,22 @@ function updateTabIndicator() {
   indicator.style.transform = `translateX(${tab.offsetLeft}px)`;
 }
 
-async function applySelection(state) {
+async function applySelection(state, imported = false) {
   view.state = state;
   const roleChanged = view.catalog?.id !== state.role;
-  if (roleChanged || (view.catalog.voiceLibraryRevision || 0) !== (state.voiceLibraryRevision || 0)) {
-    view.catalog = await api("catalog/" + state.role);
+  if (imported || roleChanged || (view.catalog.voiceLibraryRevision || 0) !== (state.voiceLibraryRevision || 0)) {
+    const revision = view.importRevision;
+    const catalog = await api("catalog/" + state.role);
+    if (revision !== view.importRevision || view.state.role !== state.role) return;
+    view.catalog = catalog;
     if (roleChanged) view.currentExpression = null;
     view.itemsSignature = "";
     if (roleChanged) $("#item-search").value = "";
   }
+  if (imported) setTab("action");
   renderState();
   const key = view.catalog.id + ":" + currentCostume().id;
-  if (view.modelKey !== key) view.modelReady = loadModel(key);
+  if (imported || view.modelKey !== key) view.modelReady = loadModel(key, imported);
   await view.modelReady;
 }
 
@@ -498,14 +508,18 @@ function renderResolution(width, height) {
   return view.petWindow ? Math.min(resolution, Math.sqrt(2_500_000 / (width * height))) : resolution;
 }
 
-function resizePetRenderer(host) {
+function resizePetRenderer(host, frame) {
   const renderer = view.app?.renderer;
-  if (!view.petWindow || !renderer || !host.clientWidth || !host.clientHeight) return;
-  const { clientWidth: width, clientHeight: height } = host;
+  if (!renderer || !host.clientWidth || !host.clientHeight) return false;
+  const width = frame?.surfaceWidth ?? host.clientWidth;
+  const height = frame?.surfaceHeight ?? host.clientHeight;
   const resolution = renderResolution(width, height);
-  if (renderer.resolution === resolution && renderer.screen.width === width && renderer.screen.height === height) return;
-  renderer.resolution = resolution;
+  const previous = view.petRendererSize;
+  if (previous?.width === width && previous.height === height && previous.resolution === resolution) return false;
+  if (renderer.resolution !== resolution) renderer.resolution = resolution;
   renderer.resize(width, height);
+  view.petRendererSize = { width, height, resolution };
+  return true;
 }
 
 function disposeModels(models) {
@@ -548,7 +562,21 @@ function synchronizeMotionFades(model, metadata = {}) {
   }
 }
 
-async function loadModel(key) {
+async function previewConfig(url, revision) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("模型配置加载失败");
+  const metadata = await response.json();
+  metadata.url = location.origin + url;
+  if (revision) {
+    const refs = metadata.FileReferences || metadata;
+    const textures = metadata.FileReferences ? "Textures" : "textures";
+    // Chromium can keep decoded images for the lifetime of the document.
+    refs[textures] = refs[textures].map((texture) => texture + "?import=" + revision);
+  }
+  return metadata;
+}
+
+async function loadModel(key, keepCurrent = false) {
   const token = ++view.request;
   view.modelKey = key;
   stopLocal("action");
@@ -557,7 +585,7 @@ async function loadModel(key) {
   $("#model-loading").hidden = false;
   $("#stage-error").hidden = true;
   const host = $("#canvas-host");
-  if (!view.petWindow) {
+  if (!view.petWindow && !keepCurrent) {
     view.model = null;
     if (view.app) {
       disposeModels(view.app.stage.removeChildren());
@@ -567,20 +595,24 @@ async function loadModel(key) {
   try {
     if (!window.PIXI?.live2d) throw new Error("Live2D 预览组件未载入");
     if (!view.app) {
+      const width = view.sizePreview?.surfaceWidth ?? host.clientWidth;
+      const height = view.sizePreview?.surfaceHeight ?? host.clientHeight;
+      const resolution = renderResolution(width, height);
       view.app = new PIXI.Application({
         resizeTo: view.petWindow ? null : host,
-        width: host.clientWidth, height: host.clientHeight,
+        width, height,
         backgroundAlpha: 0, clearBeforeRender: true, antialias: true,
-        resolution: renderResolution(host.clientWidth, host.clientHeight), autoDensity: true, preserveDrawingBuffer: true,
+        resolution, autoDensity: true, preserveDrawingBuffer: true,
       });
+      if (view.petWindow) view.petRendererSize = { width, height, resolution };
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
       view.app.renderer.textureGC.checkCountMax = 300;
     }
     const costume = currentCostume();
     const url = `/api/preview/${view.catalog.id}/${costume.id}`;
-    const metadata = await fetch(url).then((response) => response.json());
-    metadata.url = location.origin + url;
+    const metadata = await previewConfig(url, view.importRevision);
+    if (token !== view.request) return;
     const model = await PIXI.live2d.Live2DModel.from(metadata, { autoInteract: false, motionPreload: "NONE" });
     synchronizeMotionFades(model, metadata);
     if (token !== view.request) { model.destroy({ children: true }); return; }
@@ -594,6 +626,7 @@ async function loadModel(key) {
     resetModelView();
     model.internalModel.on("beforeModelUpdate", updateMouth);
     view.app.renderer.render(view.app.stage, { clear: true });
+    if (view.petWindow) window.desktopPet?.firstFrame?.();
     disposeModels(outgoing);
     host.onpointermove = (event) => {
       if (!view.model || !$("#model-loading").hidden) return;
@@ -691,17 +724,18 @@ async function loadModel(key) {
         view.model?.internalModel.focusController.focus(0, 0);
       };
       host.onwheel = (event) => {
-        if (!event.ctrlKey) return;
+        if (!event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
         event.preventDefault();
-        if (drag || !event.deltaY) return;
+        const delta = event.deltaY || event.deltaX;
+        if (drag || !delta) return;
         zoomActiveUntil = performance.now() + 180;
-        const steps = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? event.deltaY / 100 :
-          event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY / 3 : event.deltaY;
+        const steps = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? delta / 100 :
+          event.deltaMode === WheelEvent.DOM_DELTA_LINE ? delta / 3 : delta;
         window.desktopPet.zoom(-steps);
       };
       host.oncontextmenu = (event) => {
         event.preventDefault();
-        window.desktopPet.showPanel();
+        if (!view.catalog.renderOnly) window.desktopPet.showPanel();
       };
     }
     host.onclick = safely(async (event) => {
@@ -722,12 +756,18 @@ async function loadModel(key) {
     });
     setTimeout(() => {
       if (token !== view.request || !view.model) return;
-      if (!view.petWindow) captureThumbnail(key);
+      if (!view.petWindow && !view.catalog.renderOnly) captureThumbnail(key);
       if (view.tab === "costume") renderItems();
     }, 1000);
   } catch (error) {
     if (token === view.request) {
+      if (keepCurrent && view.app) {
+        view.model = null;
+        disposeModels(view.app.stage.removeChildren());
+        view.app.renderer.clear();
+      }
       $("#stage-error").hidden = false;
+      if (view.petWindow && !view.model) window.desktopPet?.firstFrame?.();
       console.error("Model preview", error);
     }
   } finally {
@@ -773,15 +813,17 @@ async function queueVisibleThumbnails() {
   });
   if (!picture) return;
   thumbnailBusy = true;
+  const revision = view.importRevision;
   const role = view.catalog.id;
   const id = Number(picture.dataset.costume);
   let model;
   let texture;
   try {
     const url = `/api/preview/${role}/${id}`;
-    const metadata = await fetch(url).then((response) => response.json());
-    metadata.url = location.origin + url;
+    const metadata = await previewConfig(url, revision);
+    if (revision !== view.importRevision) return;
     model = await PIXI.live2d.Live2DModel.from(metadata, { autoUpdate: false, autoInteract: false, motionPreload: "NONE" });
+    if (revision !== view.importRevision) return;
     synchronizeMotionFades(model, metadata);
     const bounds = model.getLocalBounds();
     model.anchor.set(.5, 1);
@@ -791,6 +833,7 @@ async function queueVisibleThumbnails() {
     texture = PIXI.RenderTexture.create({ width: 220, height: 330 });
     view.app.renderer.render(model, { renderTexture: texture });
     const imageUrl = await view.app.renderer.extract.base64(texture, "image/webp", .8);
+    if (revision !== view.importRevision) return;
     view.thumbnails.set(`${role}:${id}`, imageUrl);
     api("thumbnail", { role, costume: id, image: imageUrl }).catch((error) => console.debug("Thumbnail cache", error));
     if (view.thumbnails.size > 80) view.thumbnails.delete(view.thumbnails.keys().next().value);
@@ -804,7 +847,7 @@ async function queueVisibleThumbnails() {
       }
     }
   } catch (error) {
-    view.thumbnails.set(`${role}:${id}`, null);
+    if (revision === view.importRevision) view.thumbnails.set(`${role}:${id}`, null);
     console.debug("Costume thumbnail", error);
   }
   finally {
@@ -869,6 +912,7 @@ async function chooseCostume(id) {
   view.desiredCostume = id;
   if (view.switchingCostume) return;
   view.switchingCostume = true;
+  const revision = view.importRevision;
   document.body.dataset.switching = "true";
   $("#model-loading").textContent = "正在换装";
   $("#model-loading").hidden = false;
@@ -877,6 +921,7 @@ async function chooseCostume(id) {
     while (view.desiredCostume !== view.state.settings.costume) {
       const target = view.desiredCostume;
       const result = await api("select", { role: view.catalog.id, costume: target });
+      if (revision !== view.importRevision) return;
       view.state = result;
       if (view.desiredCostume === target) await applySelection(result);
     }
@@ -992,7 +1037,6 @@ async function boot() {
   const mode = await api("mode");
   view.standalone = mode.standalone;
   const query = new URLSearchParams(location.search);
-  view.library = await api("library");
   try {
     view.state = await api("state");
   } catch (error) {
@@ -1000,8 +1044,23 @@ async function boot() {
     location.replace("/");
     return;
   }
+  updateRoleVisibility();
+  if (view.standalone && !view.state.role) return;
+  const role = query.get("role");
+  if (role && role !== view.state.role && (await api("library")).some((entry) => entry.id === role)) {
+    view.state = await api("select", { role, costume: Number(query.get("costume")) || undefined });
+  }
+  if (!view.standalone && query.get("desktop") === "1") {
+    view.state = await api("connect", { attach: true });
+  }
+  await applySelection(view.state);
+  watchRoleEvents();
+}
+
+function updateRoleVisibility() {
   const desktopControls = !view.petWindow && (!view.standalone || Boolean(window.desktopPet)) && Boolean(view.state.role);
-  $("#connect").hidden = $("#pet-visibility").hidden = !desktopControls;
+  $("#pet-visibility").hidden = !desktopControls;
+  $("#connect").hidden = !desktopControls || view.state.renderOnly;
   if (view.standalone) {
     document.body.classList.add("standalone-preview");
     $("#exit-preview").hidden = Boolean(window.desktopPet);
@@ -1010,22 +1069,18 @@ async function boot() {
     $(".content").hidden = !view.state.role;
     $("#role-welcome").hidden = Boolean(view.state.role);
     if (window.desktopPet?.pickRole) {
-      $("#import-formats").textContent = "选择单角色 ZIP，或解压目录中的 00_integrated 父模型 JSON。";
-      $("#import-first-role").textContent = "选择角色包";
+      $("#import-formats").textContent = "选择 ZIP 角色包、Live2D 模型 JSON 或 ViewerEX 的 LPK、WPK 模型包。";
+      $("#import-first-role").textContent = "选择文件";
     }
-    if (!view.state.role) return;
   }
-  if (query.get("role") !== view.state.role && view.library.some((role) => role.id === query.get("role"))) {
-    view.state = await api("select", { role: query.get("role"), costume: Number(query.get("costume")) || undefined });
-  }
-  if (!view.standalone && query.get("desktop") === "1") {
-    view.state = await api("connect", { attach: true });
-  }
-  await applySelection(view.state);
+}
+
+function watchRoleEvents() {
   const events = new EventSource(view.viewerMode ? "/api/events?viewerex=1" : "/api/events");
   view.events = events;
   let eventQueue = Promise.resolve();
   const handleEvent = async (message) => {
+    if (view.events !== events) return;
     const event = JSON.parse(message.data);
     if (event.state.role !== view.state?.role && event.type !== "selection") return;
     if (event.state.sequence < view.state.sequence) return;
@@ -1035,7 +1090,8 @@ async function boot() {
     }
     else if (event.type === "play") await applyPlay(event.data);
     else if (event.type === "catalog" && event.data.role === view.catalog.id) {
-      receiveVoiceCatalog({catalog: await api("catalog/" + view.catalog.id), state: event.state});
+      const catalog = await api("catalog/" + view.catalog.id);
+      if (view.events === events) receiveVoiceCatalog({ catalog, state: event.state });
     }
     else if (event.type === "stop" || (event.type === "ended" && event.data !== "voice")) stopLocal(event.data);
     else if (event.type === "clear-expression") resetExpression();
@@ -1048,14 +1104,14 @@ async function boot() {
   };
   events.onopen = safely(async () => {
     const state = await api("state");
-    await applySelection(state);
+    if (view.events === events) await applySelection(state);
   });
   events.onerror = () => { $("#connect").title = "页面连接恢复中"; };
 }
 
 for (const id of ["#import-first-role", "#import-role"]) {
   $(id).addEventListener("click", () => {
-    if (window.desktopPet?.pickRole) loadRolePackage("正在导入角色…", () => window.desktopPet.pickRole());
+    if (window.desktopPet?.pickRole) loadRolePackage("正在加载模型…", () => window.desktopPet.pickRole());
     else $("#role-zip").click();
   });
 }
@@ -1075,13 +1131,33 @@ async function loadRolePackage(message, load) {
   status.hidden = false;
   status.textContent = message;
   $("#import-first-role").disabled = $("#import-role").disabled = true;
+  const content = $(".content");
+  content.inert = true;
   try {
-    if (await load()) location.replace("/");
-    else status.hidden = true;
+    await preferenceQueue;
+    if (await load()) {
+      if (!window.PIXI?.live2d || view.viewerMode) {
+        location.replace("/");
+        return;
+      }
+      view.events?.close();
+      view.events = null;
+      ++view.importRevision;
+      ++view.request;
+      PIXI.utils.clearTextureCache();
+      view.thumbnails.clear();
+      view.scrollPositions.clear();
+      view.state = await api("state");
+      updateRoleVisibility();
+      await applySelection(view.state, true);
+      watchRoleEvents();
+    }
+    status.hidden = true;
   } catch (error) {
     status.dataset.error = "";
     status.textContent = error.message.replace(/^Error invoking remote method '[^']+': Error: /, "") || "角色包加载失败";
   } finally {
+    content.inert = false;
     $("#import-first-role").disabled = $("#import-role").disabled = false;
   }
 }
@@ -1197,34 +1273,46 @@ document.addEventListener("keydown", (event) => {
 });
 audio.addEventListener("ended", () => { view.visibleVoice = null; updateSubtitle(); updatePlaying(); renderItems(); });
 audio.addEventListener("error", () => { if (audio.src) toast("语音载入失败，请重试"); });
-new ResizeObserver(([{ target }]) => {
-  resizePetRenderer(target);
-  resetModelView();
-}).observe($("#canvas-host"));
+const canvasHost = $("#canvas-host");
 if (view.petWindow) {
   let nextFrame, animate, pendingSizeFrame;
   const dimensions = ["x", "y", "width", "height"];
+  function scheduleDraw() {
+    if (!pendingSizeFrame) pendingSizeFrame = requestAnimationFrame(drawFrame);
+  }
   function drawFrame() {
     pendingSizeFrame = null;
+    const target = nextFrame ?? view.sizePreview;
+    if (!target) return;
+    // Keep the last painted canvas while Windows is still resizing the host.
+    const viewportChanged = view.sizePreview?.surfaceWidth !== target.surfaceWidth ||
+      view.sizePreview?.surfaceHeight !== target.surfaceHeight;
+    if (viewportChanged && target.surfaceWidth != null && (Math.abs(canvasHost.clientWidth - target.surfaceWidth) > 6 ||
+        Math.abs(canvasHost.clientHeight - target.surfaceHeight) > 6)) return;
     const previous = view.sizePreview && {
       ...view.sizePreview,
-      x: view.sizePreview.x + (view.sizePreview.originX ?? 0) - (nextFrame.originX ?? 0),
-      y: view.sizePreview.y + (view.sizePreview.originY ?? 0) - (nextFrame.originY ?? 0),
+      x: view.sizePreview.x + (view.sizePreview.originX ?? 0) - (target.originX ?? 0),
+      y: view.sizePreview.y + (view.sizePreview.originY ?? 0) - (target.originY ?? 0),
     };
-    const moving = animate && previous && nextFrame && dimensions.some(key => Math.abs(nextFrame[key] - previous[key]) >= .5);
+    const moving = animate && previous && dimensions.some(key => Math.abs(target[key] - previous[key]) >= .5);
     view.sizePreview = moving ? {
-      ...nextFrame,
-      ...Object.fromEntries(dimensions.map(key => [key, previous[key] + (nextFrame[key] - previous[key]) * .38])),
-    } : nextFrame;
-    resizePetRenderer($("#canvas-host"));
+      ...target,
+      ...Object.fromEntries(dimensions.map(key => [key, previous[key] + (target[key] - previous[key]) * .38])),
+    } : target;
+    const resized = resizePetRenderer(canvasHost, target);
     resetModelView();
-    if (moving) pendingSizeFrame = requestAnimationFrame(drawFrame);
+    if (resized && view.model) view.app.renderer.render(view.app.stage, { clear: true });
+    if (moving) scheduleDraw();
   }
+  new ResizeObserver(scheduleDraw).observe(canvasHost);
+  addEventListener("resize", scheduleDraw);
   window.desktopPet.watchSize((bounds, animated) => {
     nextFrame = bounds;
     animate = animated;
-    if (!pendingSizeFrame) pendingSizeFrame = requestAnimationFrame(drawFrame);
+    scheduleDraw();
   });
+} else {
+  new ResizeObserver(resetModelView).observe(canvasHost);
 }
 new ResizeObserver(updateTabIndicator).observe($(".tabs"));
 document.fonts.ready.then(updateTabIndicator);

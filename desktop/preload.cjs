@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopPet", {
   showPanel: () => ipcRenderer.send("pet:panel"),
+  firstFrame: () => ipcRenderer.send("pet:first-frame"),
   hit: (active) => ipcRenderer.send("pet:hit", active),
   watchCursor: (callback) => {
     const listener = (_event, point) => callback(point);

@@ -54,6 +54,34 @@ class RolePackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "assets/example.moc3"):
             role_package.inspect_folder(self.parent)
 
+    def test_plain_models_only_expose_referenced_render_assets(self):
+        root = self.folder / "plain"
+        (root / "parts").mkdir(parents=True)
+        (root / "parts/脸部.png").write_bytes(b"texture")
+        for moc, settings in (
+            ("role.moc3", {"FileReferences": {"Moc": "role.moc3", "Textures": ["parts/脸部.png"]}}),
+            ("role.moc", {"model": "role.moc", "textures": [r".\parts\脸部.png"]}),
+        ):
+            with self.subTest(moc=moc):
+                (root / moc).write_bytes(b"model")
+                entry = root / "model.json"
+                entry.write_text(json.dumps({**settings, "commands": ["external"]}))
+                _, role, catalog, files, preview = role_package.inspect_plain_model(entry)
+                self.assertTrue(role["renderOnly"])
+                self.assertFalse(role_package.is_indexed_folder(root))
+                self.assertEqual(files, {moc, "parts/脸部.png"})
+                self.assertEqual(catalog["costumes"][0]["actions"], [])
+                self.assertEqual(catalog["voices"], [])
+                self.assertNotIn("commands", preview)
+
+    def test_plain_model_reference_must_stay_in_its_folder(self):
+        entry = self.root / "plain.model3.json"
+        entry.write_text(json.dumps({"FileReferences": {
+            "Moc": "../other.moc3", "Textures": ["missing.png"],
+        }}))
+        with self.assertRaisesRegex(ValueError, "无效的文件路径"):
+            role_package.inspect_plain_model(entry)
+
 
 if __name__ == "__main__":
     unittest.main()
