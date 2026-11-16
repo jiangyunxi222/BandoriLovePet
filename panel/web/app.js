@@ -13,6 +13,10 @@ const view = {
   switchingCostume: false, desiredCostume: null, modelReady: Promise.resolve(),
   itemsSignature: "", listContext: "", scrollPositions: new Map(),
 };
+const subtitle = $("#subtitle");
+const subtitleDrag = enableCaptionDrag(subtitle, () => view.sizePreview ?? {
+  x: 0, y: 0, width: subtitle.parentElement.clientWidth, height: subtitle.parentElement.clientHeight,
+});
 const audio = new Audio();
 audio.preload = "metadata";
 let audioContext;
@@ -509,6 +513,7 @@ function resetModelView() {
     style.setProperty("--pet-width", `${width}px`);
     style.setProperty("--pet-bottom", `${y + height}px`);
   }
+  subtitleDrag.layout();
 }
 
 function renderResolution(width, height) {
@@ -688,10 +693,17 @@ async function loadModel(key, keepCurrent = false) {
       };
       const cursor = (point) => {
         const { gl } = view.app.renderer;
-        if (drag || performance.now() < zoomActiveUntil) return setHit(true);
+        if (drag || subtitleDrag.dragging || performance.now() < zoomActiveUntil) return setHit(true);
         if (!point || !view.model || !gl) {
           previousPoint = undefined;
           return setHit(false);
+        }
+        if (!subtitle.hidden) {
+          const card = subtitle.getBoundingClientRect();
+          if (point.x >= card.left && point.x <= card.right && point.y >= card.top && point.y <= card.bottom) {
+            previousPoint = undefined;
+            return setHit(true);
+          }
         }
         const now = performance.now();
         const x = Math.floor(point.x * view.app.renderer.resolution);
@@ -1016,12 +1028,65 @@ function stopLocal(kind) {
   if (view.catalog) renderItems();
 }
 
+
+function enableCaptionDrag(card, bounds, report = () => {}) {
+  let position;
+  let drag;
+  const clamp = (point, size, extent) => {
+    const inset = Math.min(size, extent) / 2;
+    return Math.max(inset, Math.min(extent - inset, point));
+  };
+
+  function layout() {
+    if (!card.hidden && position) {
+      const area = bounds();
+      if (area.width && area.height) {
+        const x = clamp(position.x * area.width, card.offsetWidth, area.width);
+        const y = clamp(position.y * area.height, card.offsetHeight, area.height);
+        card.style.left = (area.x + x) + "px";
+        card.style.top = (area.y + y) + "px";
+        card.style.bottom = "auto";
+        card.style.transform = "translate(-50%, -50%)";
+      }
+    }
+    report(card.hidden ? null : card.getBoundingClientRect());
+  }
+
+  card.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0 || drag) return;
+    const rect = card.getBoundingClientRect();
+    drag = { id: event.pointerId, x: event.clientX - rect.left - rect.width / 2,
+      y: event.clientY - rect.top - rect.height / 2 };
+    card.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  card.addEventListener("pointermove", (event) => {
+    if (drag?.id !== event.pointerId || card.hidden) return;
+    const parent = card.offsetParent.getBoundingClientRect();
+    const area = bounds();
+    if (!area.width || !area.height) return;
+    const x = event.clientX - parent.left - card.offsetParent.clientLeft - drag.x - area.x;
+    const y = event.clientY - parent.top - card.offsetParent.clientTop - drag.y - area.y;
+    position = { x: clamp(x, card.offsetWidth, area.width) / area.width,
+      y: clamp(y, card.offsetHeight, area.height) / area.height };
+    layout();
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    card.addEventListener(type, (event) => {
+      if (drag?.id === event.pointerId) drag = null;
+    });
+  }
+  new ResizeObserver(layout).observe(card.parentElement);
+  return { layout, get dragging() { return Boolean(drag) && !card.hidden; } };
+}
+
 function updateSubtitle() {
   const visible = Boolean(view.visibleVoice && view.state?.settings.captions && !audio.ended);
-  $("#subtitle").hidden = !visible;
+  subtitle.hidden = !visible;
   if (visible) {
     $("#subtitle-text").textContent = view.visibleVoice.caption || view.visibleVoice.name;
   }
+  subtitleDrag.layout();
 }
 
 function updatePlaying() {

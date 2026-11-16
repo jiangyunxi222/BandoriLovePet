@@ -343,8 +343,11 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
   padding: 8px 13px;
   background: rgba(35, 35, 35, .76);
   z-index: 4;
-  pointer-events: none;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+.subtitle:active { cursor: grabbing; }
 html[data-desktop-pet] .subtitle {
   left: calc(var(--pet-left) + var(--pet-width) / 2);
   bottom: calc(100% - var(--pet-bottom) + 36px);
