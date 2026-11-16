@@ -337,6 +337,9 @@ function startBridge() {
       } else if (incoming.url === "/viewer-menu" && port === ownPort) {
         showViewerMenu();
         send({ shown: true });
+      } else if (incoming.url === "/viewer-menu-close" && port === ownPort) {
+        viewerMenu?.close();
+        send({ shown: false });
       } else {
         send({ error: "未知操作" }, 404);
       }

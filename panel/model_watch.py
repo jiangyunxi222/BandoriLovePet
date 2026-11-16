@@ -121,8 +121,24 @@ def model_files(path, modified, size):
     return {item["file"] for item in catalog["costumes"]}
 
 
-def launch(arguments, panel):
-    return subprocess.Popen(arguments, cwd=panel, creationflags=subprocess.CREATE_NO_WINDOW)
+def launch(arguments, panel, env=None):
+    return subprocess.Popen(arguments, cwd=panel, creationflags=subprocess.CREATE_NO_WINDOW, env=env)
+
+
+def restore_role_menu(model, native):
+    target = controller_for(model)
+    if target is None:
+        return False
+    panel, _ = target
+    if live_panel(panel):
+        return True
+    # Run the installed controller with the loaded role's data.
+    env = os.environ.copy()
+    env.pop("BANDORILOVE_WEB_DIR", None)
+    env.pop("BANDORILOVE_ROLE_IMPORT_TOKEN", None)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    launch(command(panel) + ["--no-browser", "--restore-viewer-menu", str(native)], panel, env=env)
+    return True
 
 
 def enable(panel):

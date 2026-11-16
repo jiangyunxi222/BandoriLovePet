@@ -24,24 +24,27 @@ from urllib.parse import unquote, urlsplit
 import voice_library
 import role_package
 import desktop_pet
-from model_watch import instance_id, endpoint_for, endpoint_record, live_panel, viewer_bin
+from model_watch import instance_id, endpoint_for, endpoint_record, live_panel, restore_role_menu, viewer_bin
 
 HERE = (
     Path(sys.executable).resolve().parent
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent
 )
+RESTORE_VIEWER_MENU = None
 if __name__ == "__main__":
     location_parser = argparse.ArgumentParser(add_help=False)
     location_parser.add_argument("--panel-dir", type=Path)
+    location_parser.add_argument("--restore-viewer-menu", type=Path)
     location_args, _ = location_parser.parse_known_args()
     if location_args.panel_dir:
         HERE = location_args.panel_dir.resolve()
+    RESTORE_VIEWER_MENU = location_args.restore_viewer_menu
 REPO = HERE.parent
 WEB = Path(os.environ.get("BANDORILOVE_WEB_DIR", HERE / "web"))
 PORT = 25000
 STANDALONE = (__name__ == "__main__" and (HERE / "standalone.mode").is_file())
-NATIVE = viewer_bin(HERE)
+NATIVE = RESTORE_VIEWER_MENU or viewer_bin(HERE)
 KINDS = ("action", "expression", "costume", "voice")
 
 
@@ -562,7 +565,7 @@ class Studio:
                 return str(path).replace("\\", "/")
         return str(self.root() / self.catalog()["entry"]).replace("\\", "/")
 
-    def maintain_connection(self):
+    def maintain_connection(self, attach_only=False):
         """Reattach the same loaded character after a dropped socket."""
         last_ping = time.monotonic()
         while True:
@@ -608,6 +611,9 @@ class Studio:
                         )
                         self.slot, _ = self.loaded_model(slots)
                     actual = self.slot_path()
+                    if attach_only and (not actual or actual != self.expected_path()):
+                        self.slot = None
+                        continue
                     if actual and actual != self.expected_path():
                         matched_slot, costume = self.loaded_model(
                             native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
@@ -633,7 +639,7 @@ class Studio:
                     self.native("carrier_hide_text#5")
                     self.adopt_native_costume()
                     variables = self.native_variables()
-                    if (
+                    if not attach_only and (
                         variables.get("page_menu_version") != 7
                         or variables.get("page_input_revision") != 2
                         or variables.get("motion_rig_revision") != self.catalog().get("motionRigRevision", 1)
@@ -914,16 +920,29 @@ class Studio:
         except ConnectionError:
             pass
 
-    def disconnect_viewer(self):
+    def disconnect_viewer(self, restore_menu=False):
         viewer = self.viewer_session
         if viewer is None:
             return
+        loaded_model = None
+        if restore_menu and viewer.linked and viewer.slot_path() == viewer.expected_path():
+            loaded_model = viewer.native_model_file()
         viewer.linked = False
         viewer.player.close()
         viewer.costume_due = False
         for kind in viewer.jobs:
             viewer.stop(kind)
         self.emit_connections()
+        if restore_menu:
+            try:
+                desktop_pet.request("viewer-menu-close", port=PORT)
+            except ConnectionError:
+                pass
+        if loaded_model:
+            try:
+                restore_role_menu(loaded_model, NATIVE)
+            except OSError:
+                self.emit("notice", "无法恢复角色包控制台，请打开该角色的 ControlPanel")
 
     def connect(self, attach=False):
         if self.standalone:
@@ -1875,7 +1894,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         result = STUDIO.connect(bool(data.get("attach")))
                 elif path == "/api/disconnect-viewer":
-                    STUDIO.disconnect_viewer()
+                    STUDIO.disconnect_viewer(restore_menu=True)
                     result = STUDIO.snapshot()
                 elif path == "/api/disconnect-pet":
                     STUDIO.disconnect_pet()
@@ -1902,6 +1921,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--watch-models", action="store_true")
     parser.add_argument("--panel-dir", type=Path)
+    parser.add_argument("--restore-viewer-menu", type=Path)
     args = parser.parse_args()
     from model_watch import acquire_instance, enable, run
 
@@ -1919,7 +1939,7 @@ if __name__ == "__main__":
                     break
                 time.sleep(.1)
             raise SystemExit(0)
-    standalone = STANDALONE
+    standalone = STANDALONE and RESTORE_VIEWER_MENU is None
     STUDIO = Studio(standalone=True) if standalone else Studio()
     if not standalone and not STUDIO.roles:
         raise SystemExit("没有找到资源目录，请将控制台保留在项目目录内。")
@@ -1942,12 +1962,14 @@ if __name__ == "__main__":
 
     STUDIO.popup = CompactMenu(STUDIO, PORT)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    if sys.platform == "win32":
+    if sys.platform == "win32" and RESTORE_VIEWER_MENU is None:
         try:
             enable(HERE)
         except OSError:
             STUDIO.popup.messages.put(("error", "自动启动设置失败"))
     if not STUDIO.monitor_started:
         STUDIO.monitor_started = True
-        threading.Thread(target=STUDIO.maintain_connection, daemon=True).start()
+        threading.Thread(
+            target=STUDIO.maintain_connection, kwargs={"attach_only": RESTORE_VIEWER_MENU is not None}, daemon=True
+        ).start()
     STUDIO.popup.run()

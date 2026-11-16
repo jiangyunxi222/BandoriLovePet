@@ -138,6 +138,29 @@ class ViewerControlsTests(unittest.TestCase):
                 self.assertEqual(call.args, ("viewer-menu",))
                 self.assertEqual(call.kwargs, {"port": server.PORT})
 
+    def test_manual_disconnect_restores_the_panel_for_the_model_loaded_in_viewer(self):
+        self.owner.connect_imported_viewer()
+        viewer = self.owner.viewer_session
+
+        def restore(model, native):
+            self.assertFalse(viewer.linked)
+            self.assertIsNone(viewer.player.socket)
+            self.assertEqual(Path(model), self.loaded_entry)
+            self.assertEqual(native, server.NATIVE)
+
+        with patch.object(server, "restore_role_menu", side_effect=restore) as handoff, \
+             patch.object(server.desktop_pet, "request") as bridge:
+            self.owner.disconnect_viewer(restore_menu=True)
+            handoff.assert_called_once()
+            bridge.assert_called_once_with("viewer-menu-close", port=server.PORT)
+            self.assertFalse(self.owner.snapshot()["viewerLinked"])
+
+    def test_automatic_disconnect_does_not_start_a_role_controller(self):
+        self.owner.connect_imported_viewer()
+        with patch.object(server, "restore_role_menu") as handoff:
+            self.owner.disconnect_viewer()
+        handoff.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
