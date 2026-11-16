@@ -221,6 +221,28 @@ function panelState(port) {
   });
 }
 
+async function toggleTrayPet() {
+  const current = pet;
+  const port = current ? selectedPort : ownPort;
+  if (!current && !(await panelState(port)).role) {
+    showManager(port);
+    return;
+  }
+  const route = current ? "disconnect-pet" : "connect";
+  try {
+    const response = await fetch(`${base(port)}/api/${route}`, {
+      method: "POST", signal: AbortSignal.timeout(3000),
+      headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
+      body: JSON.stringify(current ? {} : { provider: "pet" }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "桌宠操作未完成");
+  } catch (error) {
+    if (!current) throw error;
+  }
+  if (current && pet === current && !current.isDestroyed()) current.close();
+}
+
 function restorePackage(file) {
   return new Promise((resolve, reject) => {
     const size = statSync(file).size;
@@ -335,7 +357,9 @@ function installHandlers() {
     switch (action) {
       case "open": showManager(); break;
       case "import": showManager(ownPort); break;
-      case "hide": pet?.close(); break;
+      case "toggle-pet":
+        toggleTrayPet().catch(error => dialog.showErrorBox("BandoriLove 桌宠", error.message));
+        break;
       case "top":
       case "bottom":
         preferences.layer = action;

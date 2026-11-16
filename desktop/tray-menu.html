@@ -28,7 +28,7 @@
   <main aria-label="桌宠托盘菜单">
     <button data-action="open">打开控制台</button>
     <button data-action="import">导入或更换角色</button>
-    <button data-action="hide" disabled>退出桌宠</button>
+    <button data-action="toggle-pet">显示桌宠</button>
     <fieldset aria-label="桌宠层级">
       <label class="layer"><input type="radio" name="layer" value="top">浮于最上层</label>
       <label class="layer"><input type="radio" name="layer" value="bottom">浮于最下层</label>
@@ -42,6 +42,7 @@
   <script>
     const slider = document.querySelector('#size');
     const percentage = document.querySelector('#percentage');
+    const togglePet = document.querySelector('[data-action="toggle-pet"]');
     function showValue() {
       percentage.value = `${slider.value}%`;
       slider.setAttribute('aria-valuetext', percentage.value);
@@ -55,7 +56,7 @@
       slider.max = state.size.max;
       slider.value = state.size.value;
       slider.disabled = false;
-      document.querySelector('[data-action="hide"]').disabled = false;
+      togglePet.textContent = '退出桌宠';
       showValue();
     });
     for (const button of document.querySelectorAll('[data-action]')) {
