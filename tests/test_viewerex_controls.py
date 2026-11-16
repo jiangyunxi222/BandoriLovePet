@@ -32,9 +32,11 @@ class ViewerControlsTests(unittest.TestCase):
         self.owner.roles = {"test-role": {"directory": ".", "id": "test-role"}}
         self.owner.roots = {"test-role": self.local}
         action = {"id": 1, "name": "Test", "flag": "heart_fav_test", "duration": 0.1}
+        voice = {"id": 0, "name": "Test voice", "flag": "heart_fav_voice", "duration": 0.1}
         costume = {"id": 1, "name": "Test costume", "flag": "heart_fav_costume", "actions": [action], "expressions": []}
         self.owner.catalogs = {"test-role": {
-            "id": "test-role", "directory": ".", "entry": self.entry, "costumes": [costume], "voices": [],
+            "id": "test-role", "directory": ".", "entry": self.entry, "modelId": "ournotes_test",
+            "costumes": [costume], "voices": [voice],
         }}
         self.sent = []
         self.variables = {"selected_costume": 1, "costume_loading": 0, "page_load_count": 1,
@@ -143,6 +145,18 @@ class ViewerControlsTests(unittest.TestCase):
             for call in bridge.call_args_list:
                 self.assertEqual(call.args, ("viewer-menu",))
                 self.assertEqual(call.kwargs, {"port": server.PORT})
+
+    def test_viewer_voice_tap_tracks_the_line_sent_to_the_loaded_model(self):
+        self.owner.connect_imported_viewer()
+        viewer = self.owner.viewer_session
+        self.sent.clear()
+        viewer.on_native_tap({"id": 0, "modelId": "ournotes_test_costume_001", "hitArea": "语音"})
+        self.assertEqual(self.sent, [])
+        viewer.on_native_tap({"id": 1, "modelId": "ournotes_test_costume_001", "hitArea": "语音"})
+        self.assertIn((13200, {"id": 1, "type": 0, "mtn": "web_voice_000"}), self.sent)
+        self.assertEqual(viewer.playing["voice"]["id"], 0)
+        self.assertEqual(viewer.events[-1]["data"]["item"]["id"], 0)
+        self.assertEqual(self.owner.playing, {})
 
     def test_manual_disconnect_restores_the_panel_for_the_model_loaded_in_viewer(self):
         self.owner.connect_imported_viewer()

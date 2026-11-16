@@ -907,6 +907,10 @@ class Studio:
         if not viewer.linked:
             self.disconnect_viewer(restore_menu=displaced)
             raise ConnectionError("Live2DViewerEX 的角色已发生变化，请重新连接")
+        if sys.platform == "win32":
+            from desktop_input import DesktopInput
+
+            viewer.input_router = DesktopInput(viewer, regions={"voice"})
         if not viewer.monitor_started:
             viewer.monitor_started = True
             threading.Thread(target=viewer.maintain_imported_viewer, daemon=True).start()
@@ -916,9 +920,11 @@ class Studio:
     def maintain_imported_viewer(self):
         last_ping = time.monotonic()
         while True:
-            time.sleep(0.5)
+            time.sleep(0.15)
             with self.lock:
                 if not self.linked:
+                    if self.viewer_claim is not None:
+                        self.viewer_owner.disconnect_viewer(restore_menu=False)
                     self.monitor_started = False
                     return
                 if (not self.player.socket or self.slot_path() != self.expected_path()
@@ -929,6 +935,8 @@ class Studio:
                 self.refresh_viewer_menu(variables)
                 self.route_viewer_menu(variables)
                 self.adopt_native_costume(variables)
+                if self.input_router:
+                    self.input_router.update(self.desktop_anchor())
                 if time.monotonic() - last_ping >= 10:
                     try:
                         self.player.send(10000, None)
@@ -967,6 +975,9 @@ class Studio:
         if restore_menu and viewer.viewer_claim is not None and viewer.slot_path() == viewer.expected_path():
             loaded_model = viewer.native_model_file()
         viewer.linked = False
+        if viewer.input_router:
+            viewer.input_router.close()
+            viewer.input_router = None
         viewer.player.close()
         viewer.costume_due = False
         for kind in viewer.jobs:
@@ -1223,7 +1234,7 @@ class Studio:
             self.native(f"web_set_{variable}_{int(self.settings()[key])}")
 
     def on_native_tap(self, data):
-        if self.input_router and self.input_router.active:
+        if self.input_router and self.input_router.active and not self.viewer_owner:
             return
         if self.popup and self.popup.input_blocked:
             return
@@ -1241,6 +1252,10 @@ class Studio:
                 return
             kinds = []
             if "语音" in name:
+                if self.viewer_owner:
+                    # If a voice click reached EX, replace its native random choice with our tracked line.
+                    self.operate("voice", randomize=True, body=True)
+                    return
                 kinds = ["voice"]
             elif "换装" in name:
                 kinds = ["costume"]

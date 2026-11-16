@@ -77,8 +77,9 @@ class MouseEvent(ctypes.Structure):
 
 
 class DesktopInput:
-    def __init__(self, studio):
+    def __init__(self, studio, regions=None):
         self.studio = studio
+        self.regions = regions
         self.user32, self.kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
         self.projection = None
         self.press = None
@@ -93,12 +94,34 @@ class DesktopInput:
         self.active = False
         self.closed = False
         self.worker = None
+        self.hook = None
+        self.hook_thread_id = None
         self.status = {"active": False, "capturedClicks": 0}
         self.commands = queue.Queue()
         self.configure_api()
         self.callback = ctypes.WINFUNCTYPE(
             ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t
         )(self.on_mouse)
+        if regions is None:
+            self.install_hook()
+        else:
+            threading.Thread(target=self.run_hook, daemon=True).start()
+
+    def run_hook(self):
+        message = wintypes.MSG()
+        self.user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 0)
+        self.hook_thread_id = self.kernel32.GetCurrentThreadId()
+        if self.closed:
+            return
+        try:
+            self.install_hook()
+            while self.hook and not self.closed and self.user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+                self.user32.TranslateMessage(ctypes.byref(message))
+                self.user32.DispatchMessageW(ctypes.byref(message))
+        finally:
+            self.close()
+
+    def install_hook(self):
         self.hook = self.user32.SetWindowsHookExW(
             14, self.callback, self.kernel32.GetModuleHandleW(None), 0
         )
@@ -314,7 +337,7 @@ class DesktopInput:
                 point = (point_struct.x, point_struct.y)
                 if message == 0x201 and self.active and self.projection:
                     region = self.projection.region_at(point)
-                    if region and self.owns_point(point):
+                    if region and (self.regions is None or region in self.regions) and self.owns_point(point):
                         self.press = {
                             "point": point,
                             "region": region,
@@ -422,6 +445,8 @@ class DesktopInput:
         if self.hook:
             self.user32.UnhookWindowsHookEx(self.hook)
             self.hook = None
+        if self.hook_thread_id is not None:
+            self.user32.PostThreadMessageW(self.hook_thread_id, 0x0012, 0, 0)
         self.status["hookInstalled"] = False
         if self.worker is not None:
             self.commands.put(None)

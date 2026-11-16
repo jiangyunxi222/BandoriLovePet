@@ -867,7 +867,7 @@ async function queueVisibleThumbnails() {
 }
 
 function syncVoiceVolume() {
-  if (view.volume) view.volume.gain.value = !view.petWindow && view.state?.linked ? 0 : 1;
+  if (view.volume) view.volume.gain.value = !view.petWindow && (view.viewerMode || view.state?.linked) ? 0 : 1;
 }
 
 function enableAudio() {
@@ -904,7 +904,9 @@ function updateMouth() {
 
 async function playItem(kind, item) {
   if (kind === "voice") await enableAudio();
-  if (kind === "voice" && view.visibleVoice?.id === item.id && !audio.paused) {
+  if (kind === "voice" && (view.viewerMode && view.state.viewerLinked
+    ? view.state.playing.voice?.id === item.id
+    : view.visibleVoice?.id === item.id && !audio.paused)) {
     view.state = await api("stop", { kind });
     stopLocal(kind);
     return;
@@ -945,7 +947,7 @@ async function applyPlay(data) {
   const { kind, item } = data;
   if (data.costume !== undefined && data.costume !== currentCostume().id) return;
   if (kind === "voice") {
-    if ((view.state.desktopProvider === "pet" && !view.petWindow) || (view.viewerMode && view.state.viewerLinked)) return;
+    if (view.state.desktopProvider === "pet" && !view.petWindow) return;
     const generation = ++audioGeneration;
     audio.pause();
     audio.src = asset(item.file);
@@ -1018,7 +1020,7 @@ function updateSubtitle() {
   const visible = Boolean(view.visibleVoice && view.state?.settings.captions && !audio.ended);
   $("#subtitle").hidden = !visible;
   if (visible) {
-    $("#subtitle-speaker").textContent = view.catalog.name.replace(/（Garupa）/g, "");
+    if (!view.petWindow) $("#subtitle-speaker").textContent = view.catalog.name.replace(/（Garupa）/g, "");
     $("#subtitle-text").textContent = view.visibleVoice.caption || view.visibleVoice.name;
   }
 }
@@ -1105,7 +1107,7 @@ function watchRoleEvents() {
       const catalog = await api("catalog/" + view.catalog.id);
       if (view.events === events) receiveVoiceCatalog({ catalog, state: event.state });
     }
-    else if (event.type === "stop" || (event.type === "ended" && event.data !== "voice")) stopLocal(event.data);
+    else if (event.type === "stop" || (event.type === "ended" && (event.data !== "voice" || view.viewerMode))) stopLocal(event.data);
     else if (event.type === "clear-expression") resetExpression();
     else if (event.type === "reset") { for (const kind of ["action", "voice", "costume"]) stopLocal(kind); resetExpression(); }
     else if (event.type === "notice") toast(event.data);
