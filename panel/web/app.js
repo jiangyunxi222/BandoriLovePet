@@ -491,6 +491,14 @@ function resetModelView() {
   const { model, modelSize } = view;
   const host = $("#canvas-host");
   const { x, y, width, height } = view.sizePreview ?? { x: 0, y: 0, width: host.clientWidth, height: host.clientHeight };
+  if (!width || !height) return;
+  if (!view.petWindow) {
+    // Reusing the preview renderer can change its host size without a window resize.
+    const renderer = view.app.renderer;
+    if (renderer.screen.width !== width || renderer.screen.height !== height) {
+      renderer.resize(width, height);
+    }
+  }
   const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height);
   model.scale.set(scale);
   model.anchor.set(.5, 1);
