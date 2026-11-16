@@ -619,6 +619,7 @@ async function loadModel(key) {
         if (event.button !== 0) return;
         suppressClick = false;
         drag = { x: event.screenX, y: event.screenY };
+        window.desktopPet.drag("begin", Math.round(drag.x), Math.round(drag.y));
       };
       const track = host.onpointermove;
       host.onpointermove = (event) => {
@@ -628,17 +629,22 @@ async function loadModel(key) {
         if (!suppressClick && Math.hypot(dx, dy) < 4) return;
         if (!suppressClick) host.setPointerCapture(event.pointerId);
         suppressClick = true;
-        window.desktopPet.move(Math.round(dx), Math.round(dy));
-        drag = { x: event.screenX, y: event.screenY };
+        window.desktopPet.drag("move", Math.round(event.screenX), Math.round(event.screenY));
       };
-      host.onpointerup = host.onpointercancel = host.onlostpointercapture = () => { drag = null; };
+      const endDrag = () => {
+        if (!drag) return;
+        drag = null;
+        window.desktopPet.drag("end");
+      };
+      host.onpointerup = host.onpointercancel = host.onlostpointercapture = endDrag;
       host.onpointerleave = () => {
-        if (!suppressClick) drag = null;
+        if (!suppressClick) endDrag();
         view.model?.internalModel.focusController.focus(0, 0);
       };
       host.onwheel = (event) => {
         if (!event.ctrlKey) return;
         event.preventDefault();
+        if (drag) return;
         window.desktopPet.zoom(-event.deltaY);
       };
       host.oncontextmenu = (event) => {

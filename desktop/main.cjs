@@ -14,10 +14,11 @@ const token = randomBytes(32).toString("hex");
 mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
-let manager, pet, tray, backend, bridge, ownPort, selectedPort, managerPort;
+let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
+preferences.layer ||= preferences.onTop === false ? "bottom" : "top";
 
 const base = (port) => `http://127.0.0.1:${port}`;
 const windowOptions = {
@@ -59,6 +60,16 @@ function showManager(port = selectedPort || ownPort) {
   manager.focus();
 }
 
+function windowCommand(command) {
+  if (petWindowProcess?.stdin.writable) petWindowProcess.stdin.write(`${command}\n`);
+}
+
+function applyPetLayer() {
+  if (!pet) return;
+  pet.setAlwaysOnTop(preferences.layer === "top", "screen-saver");
+  windowCommand(preferences.layer);
+}
+
 function showPet(port) {
   selectedPort = port;
   if (!pet || pet.isDestroyed()) {
@@ -72,11 +83,18 @@ function showPet(port) {
     pet = new BrowserWindow({
       ...bounds, show: false, transparent: true, frame: false, resizable: false,
       backgroundColor: "#00000000",
-      skipTaskbar: true, hasShadow: false, alwaysOnTop: preferences.onTop !== false,
+      title: "BandoriLove 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
       webPreferences: windowOptions,
     });
+    pet.on("page-title-updated", (event) => event.preventDefault());
     guardNavigation(pet, () => selectedPort);
     const window = pet;
+    const nativeWindow = spawn(path.join(bundled, "PetWindow.exe"), [
+      window.getNativeWindowHandle().readBigUInt64LE().toString(), String(process.pid),
+    ], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
+    nativeWindow.on("error", (error) => console.error(error));
+    nativeWindow.stdin.on("error", (error) => console.error(error));
+    petWindowProcess = nativeWindow;
     let inside = false;
     const cursorTimer = setInterval(() => {
       if (!window.isVisible()) return;
@@ -89,12 +107,17 @@ function showPet(port) {
       inside = within;
     }, 40);
     pet.on("moved", () => { preferences.bounds = pet.getBounds(); save(); });
-    pet.on("closed", () => { clearInterval(cursorTimer); pet = null; selectedPort = null; });
+    pet.on("closed", () => {
+      clearInterval(cursorTimer);
+      nativeWindow.stdin.end();
+      pet = petWindowProcess = selectedPort = null;
+    });
   }
   pet.loadURL(base(port) + "/?pet=1").then(() => {
     if (pet && !pet.isDestroyed()) {
       pet.setIgnoreMouseEvents(true);
       pet.showInactive();
+      applyPetLayer();
     }
   }).catch(() => {});
 }
@@ -109,6 +132,7 @@ function resizePet(factor) {
   const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
   const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, bounds.y + bounds.height - height));
   pet.setBounds({ x, y, width, height });
+  applyPetLayer();
   preferences.bounds = pet.getBounds();
   save();
 }
@@ -192,11 +216,12 @@ function installHandlers() {
   ipcMain.on("pet:hit", (event, hit) => {
     if (event.sender === pet?.webContents) pet.setIgnoreMouseEvents(hit !== true);
   });
-  ipcMain.on("pet:move", (event, dx, dy) => {
-    if (event.sender !== pet?.webContents || !Number.isInteger(dx) || !Number.isInteger(dy)) return;
-    if (Math.abs(dx) > 250 || Math.abs(dy) > 250) return;
-    const [x, y] = pet.getPosition();
-    pet.setPosition(x + dx, y + dy);
+  ipcMain.on("pet:drag", (event, operation, x, y) => {
+    if (event.sender !== pet?.webContents) return;
+    if (operation === "end") { windowCommand("end"); return; }
+    if (!["begin", "move"].includes(operation) || !Number.isInteger(x) || !Number.isInteger(y)) return;
+    const pointer = screen.dipToScreenPoint({ x, y });
+    windowCommand(`${operation} ${pointer.x} ${pointer.y}`);
   });
   ipcMain.on("pet:zoom", (event, direction) => {
     if (event.sender === pet?.webContents) resizePet(direction > 0 ? 1.12 : 0.89);
@@ -234,9 +259,13 @@ async function start() {
     { label: "打开控制台", click: () => showManager() },
     { label: "导入或更换角色", click: () => showManager(ownPort) },
     { label: "退出桌宠", click: () => pet?.close() },
-    { label: "置顶", type: "checkbox", checked: preferences.onTop !== false, click: ({ checked }) => {
-      preferences.onTop = checked; pet?.setAlwaysOnTop(checked); save();
-    } },
+    ...[["top", "浮于最上层"], ["bottom", "浮于最下层"]].map(([layer, label]) => ({
+      label, type: "radio", checked: preferences.layer === layer, click: () => {
+        preferences.layer = layer;
+        save();
+        applyPetLayer();
+      },
+    })),
     { label: "放大", click: () => resizePet(1.12) },
     { label: "缩小", click: () => resizePet(0.89) },
     { type: "separator" },

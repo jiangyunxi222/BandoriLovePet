@@ -29,6 +29,9 @@ $desktop = Join-Path $resources "app"
 $backend = Join-Path $resources "panel"
 New-Item -ItemType Directory -Path $desktop,$backend -Force | Out-Null
 Copy-Item -Path (Join-Path $root "package.json"),(Join-Path $root "desktop") -Destination $desktop -Recurse
+$compiler = Join-Path $env:WINDIR "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+& $compiler /nologo /target:exe /platform:x64 /optimize+ "/out:$(Join-Path $backend 'PetWindow.exe')" (Join-Path $root "desktop/PetWindow.cs")
+if ($LASTEXITCODE) { throw "Native window helper build failed" }
 Copy-Item -Path (Join-Path $panel "web"),(Join-Path $panel "ControlPanel.ico"),(Join-Path $panel "THIRD_PARTY_NOTICES.txt") -Destination $backend -Recurse
 foreach ($runtime in @("live2d.min.js","live2dcubismcore.min.js")) {
     $bundledRuntime = Join-Path $backend "web/vendor/$runtime"

@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld("desktopPet", {
     ipcRenderer.on("pet:cursor", listener);
     return () => ipcRenderer.removeListener("pet:cursor", listener);
   },
-  move: (dx, dy) => ipcRenderer.send("pet:move", dx, dy),
+  drag: (operation, x, y) => ipcRenderer.send("pet:drag", operation, x, y),
   zoom: (direction) => ipcRenderer.send("pet:zoom", direction),
   rememberPackage: (file) => ipcRenderer.invoke("pet:remember", webUtils.getPathForFile(file)),
 });
