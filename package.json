@@ -1,0 +1,8 @@
+{
+  "name": "bandorilove-desktop-pet",
+  "productName": "BandoriLove Desktop Pet",
+  "version": "0.1.0",
+  "description": "Standalone Windows player for BandoriLove Live2D role packages",
+  "main": "desktop/main.cjs",
+  "scripts": { "start": "electron ." }
+}

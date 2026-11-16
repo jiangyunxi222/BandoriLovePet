@@ -1,0 +1,44 @@
+param(
+    [Parameter(Mandatory = $true)][string]$ElectronDirectory,
+    [Parameter(Mandatory = $true)][string]$ResourceEditor,
+    [string]$PanelSource = "",
+    [string]$PyInstallerModules = ""
+)
+$ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
+if (-not $PanelSource) { $PanelSource = Join-Path $root "panel" }
+$build = Join-Path $root "build"
+$dist = Join-Path $root "dist"
+$stage = Join-Path $build "player"
+$electron = (Resolve-Path -LiteralPath $ElectronDirectory).Path
+$resourceEditor = (Resolve-Path -LiteralPath $ResourceEditor).Path
+$panel = (Resolve-Path -LiteralPath $PanelSource).Path
+$icon = Join-Path $panel "ControlPanel.ico"
+if ($PyInstallerModules) { $env:PYTHONPATH = (Resolve-Path -LiteralPath $PyInstallerModules).Path }
+$env:PYINSTALLER_CONFIG_DIR = Join-Path $build "pyinstaller-cache"
+New-Item -ItemType Directory -Path $build,$dist,$stage -Force | Out-Null
+if (Test-Path -LiteralPath (Join-Path $stage "resources/app")) { throw "Use a fresh build/player directory." }
+Get-ChildItem -LiteralPath $electron | Where-Object { $_.Name -notin @("resources","PetProfile") } |
+    Copy-Item -Destination $stage -Recurse
+$binary = Get-ChildItem -LiteralPath $stage -File -Filter "*.exe" | Select-Object -First 1
+Rename-Item -LiteralPath $binary.FullName -NewName "BandoriLoveDesktopPet.exe"
+& $resourceEditor (Join-Path $stage "BandoriLoveDesktopPet.exe") --set-icon $icon --set-version-string FileDescription "BandoriLove Desktop Pet" --set-version-string ProductName "BandoriLove Desktop Pet"
+if ($LASTEXITCODE) { throw "Windows application icon update failed" }
+$resources = Join-Path $stage "resources"
+$desktop = Join-Path $resources "app"
+$backend = Join-Path $resources "panel"
+New-Item -ItemType Directory -Path $desktop,$backend -Force | Out-Null
+Copy-Item -Path (Join-Path $root "package.json"),(Join-Path $root "desktop") -Destination $desktop -Recurse
+Copy-Item -Path (Join-Path $panel "web"),(Join-Path $panel "ControlPanel.ico"),(Join-Path $panel "THIRD_PARTY_NOTICES.txt") -Destination $backend -Recurse
+foreach ($runtime in @("live2d.min.js","live2dcubismcore.min.js")) {
+    $bundledRuntime = Join-Path $backend "web/vendor/$runtime"
+    if (Test-Path -LiteralPath $bundledRuntime) { Remove-Item -LiteralPath $bundledRuntime }
+}
+python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name ControlPanel --distpath $backend --workpath (Join-Path $build "backend-work") --specpath $build (Join-Path $panel "server.py")
+if ($LASTEXITCODE) { throw "Control Panel build failed" }
+$zip = Join-Path $build "player.zip"
+python -c "import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); files=(p for p in root.rglob('*') if p.is_file()); archive=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED,compresslevel=3); [archive.write(p,p.relative_to(root)) for p in files]; archive.close()" $stage $zip
+if ($LASTEXITCODE) { throw "Player archive build failed" }
+python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name setup --add-data "$zip;." --distpath $dist --workpath (Join-Path $build "setup-work") --specpath $build (Join-Path $root "setup.py")
+if ($LASTEXITCODE) { throw "Installer build failed" }
+Get-FileHash -LiteralPath (Join-Path $dist "setup.exe")
