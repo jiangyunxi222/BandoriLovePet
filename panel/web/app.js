@@ -429,7 +429,7 @@ function renderState() {
   const visibility = $("#pet-visibility");
   visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
   visibility.setAttribute("aria-pressed", String(view.state.petLinked));
-  if (view.volume) view.volume.gain.value = view.state.linked ? 0 : 1;
+  syncVoiceVolume();
   $("#game-name").textContent = view.catalog.game;
   $("#band-name").textContent = view.catalog.group.replace(/（Garupa）/g, "");
   document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLove";
@@ -802,6 +802,10 @@ async function queueVisibleThumbnails() {
   }
 }
 
+function syncVoiceVolume() {
+  if (view.volume) view.volume.gain.value = !view.petWindow && view.state?.linked ? 0 : 1;
+}
+
 function enableAudio() {
   if (!audioContext) {
     audioContext = new AudioContext();
@@ -813,7 +817,7 @@ function enableAudio() {
     source.connect(analyser);
     analyser.connect(view.volume);
     view.volume.connect(audioContext.destination);
-    view.volume.gain.value = view.state?.linked ? 0 : 1;
+    syncVoiceVolume();
   }
   return audioContext.resume();
 }
