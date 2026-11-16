@@ -24,7 +24,9 @@ from urllib.parse import unquote, urlsplit
 import voice_library
 import role_package
 import desktop_pet
-from model_watch import instance_id, endpoint_for, endpoint_record, live_panel, restore_role_menu, viewer_bin
+from model_watch import (
+    claim_role_controller, endpoint_for, endpoint_record, instance_id, release_instance, restore_role_menu, viewer_bin,
+)
 
 HERE = (
     Path(sys.executable).resolve().parent
@@ -260,6 +262,7 @@ class Studio:
         self.viewer_session = None
         self.viewer_owner = None
         self.viewer_entry = None
+        self.viewer_claim = None
         self.viewer_menu_generation = None
         self.pet_monitor_started = False
         self.player.on_tap = self.on_native_tap
@@ -840,23 +843,30 @@ class Studio:
                 viewer.saved = stored
             else:
                 viewer.saved = {"roles": copy.deepcopy(self.saved["roles"])}
+        if viewer.viewer_claim is not None:
+            if viewer.linked and viewer.player.socket and (viewer.slot, viewer.viewer_entry) == matched_slot:
+                return viewer.snapshot()
+            self.disconnect_viewer()
+        viewer.viewer_claim, displaced = claim_role_controller(location)
         viewer.slot, viewer.viewer_entry = matched_slot
+        self.viewer_session = viewer
         try:
             viewer.player.connect()
         except OSError as error:
-            viewer.linked = False
+            self.disconnect_viewer(restore_menu=displaced)
             raise ConnectionError("请启动 Live2DViewerEX 并在它的设置中启用 API，再试一次") from error
         viewer.linked = True
-        viewer.viewer_menu_generation = None
-        self.viewer_session = viewer
         variables = viewer.native_variables()
         viewer.last_menu_request = variables.get("page_menu_request", 0)
-        viewer.keep_native_menu(variables)
+        viewer.viewer_menu_generation = variables.get("page_load_count", 0)
+        if variables.get("page_input_blocked") == 1:
+            viewer.native("web_allow_input#8")
         viewer.adopt_native_costume(variables)
         viewer.sync_preferences()
         viewer.sync_favorites()
         viewer.sync_loop_flags()
         if not viewer.linked:
+            self.disconnect_viewer(restore_menu=displaced)
             raise ConnectionError("Live2DViewerEX 的角色已发生变化，请重新连接")
         if not viewer.monitor_started:
             viewer.monitor_started = True
@@ -877,7 +887,7 @@ class Studio:
                     self.viewer_owner.disconnect_viewer()
                     continue
                 variables = self.native_variables()
-                self.keep_native_menu(variables)
+                self.refresh_viewer_menu(variables)
                 self.route_viewer_menu(variables)
                 self.adopt_native_costume(variables)
                 if time.monotonic() - last_ping >= 10:
@@ -887,25 +897,15 @@ class Studio:
                         self.viewer_owner.disconnect_viewer()
                     last_ping = time.monotonic()
 
-    def keep_native_menu(self, variables):
-        if variables.get("costume_loading") != 0 or variables.get("page_backend_connected") != 1:
+    def refresh_viewer_menu(self, variables):
+        if variables.get("costume_loading") != 0:
             return
         generation = variables.get("page_load_count", 0)
         if generation == self.viewer_menu_generation:
             return
         self.viewer_menu_generation = generation
-        # A previous command-only connection could have claimed menu events.
-        # Preserve the claim when the role's real menu controller is active.
-        if not self.role_panel_owns_menu():
-            self.native("web_set_page_backend_connected_0")
-
-    def role_panel_owns_menu(self):
-        panel = panel_directory(Path(self.native_model_file()).parent)
-        connection = live_panel(panel)
-        if not connection:
-            return False
-        _, state = connection
-        return bool(state.get("linked") and state.get("slot") == self.slot and isinstance(state.get("menu"), dict))
+        if variables.get("page_backend_connected") != 1:
+            self.native("web_set_page_backend_connected_1")
 
     def route_viewer_menu(self, variables):
         request = variables.get("page_menu_request")
@@ -913,31 +913,32 @@ class Studio:
             return
         previous = self.last_menu_request
         self.last_menu_request = request
-        if previous is None or request <= previous or self.role_panel_owns_menu():
+        if previous is None or request <= previous:
             return
         try:
             desktop_pet.request("viewer-menu", port=PORT)
         except ConnectionError:
             pass
 
-    def disconnect_viewer(self, restore_menu=False):
+    def disconnect_viewer(self, restore_menu=True):
         viewer = self.viewer_session
         if viewer is None:
             return
         loaded_model = None
-        if restore_menu and viewer.linked and viewer.slot_path() == viewer.expected_path():
+        if restore_menu and viewer.viewer_claim is not None and viewer.slot_path() == viewer.expected_path():
             loaded_model = viewer.native_model_file()
         viewer.linked = False
         viewer.player.close()
         viewer.costume_due = False
         for kind in viewer.jobs:
             viewer.stop(kind)
+        release_instance(viewer.viewer_claim)
+        viewer.viewer_claim = None
         self.emit_connections()
-        if restore_menu:
-            try:
-                desktop_pet.request("viewer-menu-close", port=PORT)
-            except ConnectionError:
-                pass
+        try:
+            desktop_pet.request("viewer-menu-close", port=PORT)
+        except ConnectionError:
+            pass
         if loaded_model:
             try:
                 restore_role_menu(loaded_model, NATIVE)
@@ -1106,8 +1107,7 @@ class Studio:
         return False
 
     def sync_loop_flags(self):
-        if self.viewer_owner is None:
-            self.native("web_set_page_backend_connected_1")
+        self.native("web_set_page_backend_connected_1")
         for kind in self.jobs:
             self.native(f"web_set_page_loop_{kind}_{int(self.looping[kind])}")
 

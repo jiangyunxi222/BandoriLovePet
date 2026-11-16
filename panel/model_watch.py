@@ -8,6 +8,7 @@ from pathlib import Path
 from functools import lru_cache
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -184,6 +185,85 @@ def acquire_instance(name):
         kernel.CloseHandle(handle)
         return None
     return handle
+
+
+def release_instance(handle):
+    if handle is not None:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle(handle)
+
+
+def listening_pid(port):
+    from ctypes import wintypes
+
+    table = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+    table.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+                      wintypes.ULONG, wintypes.DWORD, wintypes.ULONG)
+    size = wintypes.DWORD()
+    # IPv4 TCP_TABLE_OWNER_PID_LISTENER
+    if table(None, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 122:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if table(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 0:
+        return None
+    row_type = wintypes.DWORD * 6
+    count = wintypes.DWORD.from_buffer(buffer).value
+    rows = (row_type * count).from_buffer(buffer, ctypes.sizeof(wintypes.DWORD))
+    return next((row[5] for row in rows if socket.ntohs(row[2] & 0xffff) == port), None)
+
+
+def close_role_window(port, title):
+    from ctypes import wintypes
+
+    pid = listening_pid(port)
+    if pid is None:
+        return
+    user = ctypes.WinDLL("user32")
+    user.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
+
+    @callback_type
+    def close_matching_window(window, _):
+        owner = wintypes.DWORD()
+        user.GetWindowThreadProcessId(window, ctypes.byref(owner))
+        if owner.value == pid:
+            name = ctypes.create_unicode_buffer(len(title) + 2)
+            kind = ctypes.create_unicode_buffer(32)
+            user.GetWindowTextW(window, name, len(name))
+            user.GetClassNameW(window, kind, len(kind))
+            if name.value == title and kind.value == "TkTopLevel":
+                user.PostMessageW(window, 0x0010, 0, 0)  # WM_CLOSE
+                return False
+        return True
+
+    user.EnumWindows(close_matching_window, 0)
+
+
+def claim_role_controller(model):
+    panel = Path(model).parent / "ControlPanel"
+    if not panel.is_dir():
+        panel = panel.with_name("控制台")
+    name = "BandGDreamPanel" + instance_id(panel)
+    handle = acquire_instance(name)
+    if handle is not None:
+        return handle, False
+    target = controller_for(model)
+    connection = live_panel(panel) if target else None
+    if connection:
+        port, state = connection
+        if state.get("role") == target[1].get("id") and isinstance(state.get("menu"), dict):
+            close_role_window(port, target[1]["name"] + " · 角色菜单")
+    for _ in range(30):
+        time.sleep(.05)
+        handle = acquire_instance(name)
+        if handle is not None:
+            return handle, True
+    raise ConnectionError("角色包控制台仍在运行。请关闭该角色的 ControlPanel 后重试。")
 
 
 def controller_for(path):

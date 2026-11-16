@@ -46,6 +46,9 @@ class ViewerControlsTests(unittest.TestCase):
             return {"varFloats": self.variables.copy()}
 
         for patcher in (patch.object(server, "native_data", side_effect=native_data),
+                        patch.object(server, "claim_role_controller", return_value=(42, False)),
+                        patch.object(server, "release_instance"),
+                        patch.object(server, "restore_role_menu"),
                         patch.object(server.Player, "connect", lambda player: setattr(player, "socket", object())),
                         patch.object(server.Player, "close", lambda player: setattr(player, "socket", None)),
                         patch.object(server.Player, "send", lambda player, message, data: self.sent.append((message, data)))):
@@ -93,44 +96,47 @@ class ViewerControlsTests(unittest.TestCase):
     def motion_names(self):
         return [data["mtn"] for message, data in self.sent if message == 13200]
 
-    def test_command_connection_leaves_the_builtin_menu_active(self):
+    def test_command_connection_claims_the_menu(self):
         self.owner.connect_imported_viewer()
-        self.owner.viewer_session.sync_loop_flags()
-        self.owner.disconnect_viewer()
-        self.assertFalse(any("page_backend_connected" in motion for motion in self.motion_names()))
+        server.claim_role_controller.assert_called_once_with(str(self.loaded_entry))
+        self.assertIn("web_set_page_backend_connected_1", self.motion_names())
 
-    def test_stale_menu_claim_is_cleared_once_per_loaded_model(self):
-        self.variables["page_backend_connected"] = 1
+    def test_menu_claim_is_reapplied_once_per_loaded_model(self):
         self.owner.connect_imported_viewer()
         viewer = self.owner.viewer_session
-        reset = "web_set_page_backend_connected_0"
-        self.assertEqual(self.motion_names().count(reset), 1)
-        viewer.keep_native_menu(self.variables)
-        self.assertEqual(self.motion_names().count(reset), 1)
+        claim = "web_set_page_backend_connected_1"
+        self.assertEqual(self.motion_names().count(claim), 1)
+        viewer.refresh_viewer_menu(self.variables)
+        self.assertEqual(self.motion_names().count(claim), 1)
         self.variables.update(page_load_count=2, costume_loading=1)
-        viewer.keep_native_menu(self.variables)
-        self.assertEqual(self.motion_names().count(reset), 1)
+        viewer.refresh_viewer_menu(self.variables)
+        self.assertEqual(self.motion_names().count(claim), 1)
         self.variables["costume_loading"] = 0
-        viewer.keep_native_menu(self.variables)
-        self.assertEqual(self.motion_names().count(reset), 2)
-        self.assertNotIn("web_set_page_backend_connected_1", self.motion_names())
+        viewer.refresh_viewer_menu(self.variables)
+        self.assertEqual(self.motion_names().count(claim), 2)
 
-    def test_connection_preserves_the_roles_running_menu_controller(self):
-        self.variables["page_backend_connected"] = 1
-        with patch.object(server, "live_panel", return_value=(25001, {"linked": True, "slot": 1, "menu": {"visible": False}})):
-            self.owner.connect_imported_viewer()
-            with patch.object(server.desktop_pet, "request") as bridge:
-                self.owner.viewer_session.route_viewer_menu({"page_menu_request": 1})
-            bridge.assert_not_called()
-            self.owner.disconnect_viewer()
-        self.assertFalse(any("page_backend_connected" in motion for motion in self.motion_names()))
+    def test_an_existing_controller_that_cannot_yield_blocks_connection(self):
+        server.claim_role_controller.side_effect = ConnectionError("角色包控制台仍在运行")
+        with patch.object(server.Player, "connect") as connect:
+            with self.assertRaisesRegex(ConnectionError, "仍在运行"):
+                self.owner.connect_imported_viewer()
+        connect.assert_not_called()
+        self.assertFalse(self.owner.snapshot()["viewerLinked"])
 
-    def test_clicks_route_to_the_desktop_menu_when_no_role_controller_is_listening(self):
+    def test_failed_takeover_releases_the_claim_and_restores_the_displaced_controller(self):
+        server.claim_role_controller.return_value = (42, True)
+        with patch.object(server.Player, "connect", side_effect=OSError):
+            with self.assertRaises(ConnectionError):
+                self.owner.connect_imported_viewer()
+        server.release_instance.assert_called_once_with(42)
+        server.restore_role_menu.assert_called_once()
+        self.assertFalse(self.owner.snapshot()["viewerLinked"])
+
+    def test_clicks_route_to_the_desktop_menu(self):
         self.variables["page_menu_request"] = 3
         self.owner.connect_imported_viewer()
         viewer = self.owner.viewer_session
-        with patch.object(server, "live_panel", return_value=(25001, {"linked": True, "slot": 2, "menu": {}})), \
-             patch.object(server.desktop_pet, "request") as bridge:
+        with patch.object(server.desktop_pet, "request") as bridge:
             for count in (3, 4, 4, 0, 1):
                 viewer.route_viewer_menu({"page_menu_request": count})
             self.assertEqual(bridge.call_count, 2)
@@ -145,6 +151,8 @@ class ViewerControlsTests(unittest.TestCase):
         def restore(model, native):
             self.assertFalse(viewer.linked)
             self.assertIsNone(viewer.player.socket)
+            self.assertIsNone(viewer.viewer_claim)
+            server.release_instance.assert_called_once_with(42)
             self.assertEqual(Path(model), self.loaded_entry)
             self.assertEqual(native, server.NATIVE)
 
@@ -155,11 +163,11 @@ class ViewerControlsTests(unittest.TestCase):
             bridge.assert_called_once_with("viewer-menu-close", port=server.PORT)
             self.assertFalse(self.owner.snapshot()["viewerLinked"])
 
-    def test_automatic_disconnect_does_not_start_a_role_controller(self):
+    def test_disconnect_does_not_start_a_controller_for_a_model_no_longer_loaded(self):
         self.owner.connect_imported_viewer()
-        with patch.object(server, "restore_role_menu") as handoff:
+        with patch.object(self.owner.viewer_session, "slot_path", return_value=""):
             self.owner.disconnect_viewer()
-        handoff.assert_not_called()
+        server.restore_role_menu.assert_not_called()
 
 
 if __name__ == "__main__":
