@@ -8,7 +8,8 @@ contextBridge.exposeInMainWorld("desktopPet", {
     ipcRenderer.on("pet:cursor", listener);
     return () => ipcRenderer.removeListener("pet:cursor", listener);
   },
-  watchSize: (callback) => { ipcRenderer.on("pet:size-preview", (_event, bounds) => callback(bounds)); },
+  getFrame: () => ipcRenderer.invoke("pet:frame"),
+  watchSize: (callback) => { ipcRenderer.on("pet:size-preview", (_event, bounds, animate) => callback(bounds, animate)); },
   drag: (operation, x, y) => ipcRenderer.send("pet:drag", operation, x, y),
   zoom: (direction) => ipcRenderer.send("pet:zoom", direction),
   rememberPackage: (file) => ipcRenderer.invoke("pet:remember", webUtils.getPathForFile(file)),

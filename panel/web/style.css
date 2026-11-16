@@ -186,30 +186,36 @@ a {
 .slash {
   color:#d3ccd8
 }
+.desktop-controls {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-left:auto
+}
 .connection {
   border:1px solid #e6e1eb;
   background:#fff;
-  border-radius:20px;
+  border-radius:999px;
   display:flex;
+  justify-content:center;
   gap:8px;
   align-items:center;
-  padding:9px 13px;
-  font-size:10px;
-  color:#978b9f
+  height:36px;
+  padding:0 14px;
+  font-size:13px;
+  font-weight:500;
+  white-space:nowrap;
+  color:#75637e
 }
 .connection .status-dot {
   background:#c9c0cf
 }
-.connection.connected {
+.connection[aria-pressed="true"] {
   border-color:#d9e6d6;
-  color:#779071
+  color:#5f7b57
 }
-.connection.connected .status-dot {
+.connection[aria-pressed="true"] .status-dot {
   background:#93b68a
-}
-.connection>span:last-child {
-  font-size:14px;
-  color:#b5aabd
 }
 .content {
   padding:32px 45px 22px;
@@ -336,6 +342,12 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
   border:1px solid #fff;
   z-index:4;
   backdrop-filter:blur(14px)
+}
+html[data-desktop-pet] .subtitle {
+  left:calc(var(--pet-left) + 12px);
+  right:auto;
+  width:calc(var(--pet-width) - 24px);
+  bottom:calc(100% - var(--pet-bottom) + 36px);
 }
 .subtitle>span {
   font-size:10px;
@@ -1031,9 +1043,6 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
     gap:15px;
     height:62px
   }
-  .connection {
-    margin-left:auto
-  }
   .content {
     padding:25px 24px
   }
@@ -1152,12 +1161,6 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
 .heart-filter {
   color:#9c87a5
 }
-.connection {
-  color:#83738f
-}
-.connection.connected {
-  color:#5f7b57
-}
 .workspace {
   margin-left:0;
   width:100%
@@ -1189,9 +1192,6 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
 @media(max-width:650px) {
   .topbar .breadcrumb {
     display:none
-  }
-  .topbar .connection {
-    margin-left:auto
   }
   .topbar .brand {
     font-size:16px
@@ -1232,9 +1232,6 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
 }
 .now-playing>div>span {
   font-size:10px
-}
-.connection {
-  font-size:11px
 }
 .breadcrumb {
   font-size:12px

@@ -3,12 +3,7 @@ using System.Runtime.InteropServices;
 
 internal static class PetWindow
 {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect { public int Left, Top, Right, Bottom; }
-
-    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] private static extern IntPtr GetTopWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
@@ -19,7 +14,7 @@ internal static class PetWindow
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
-    private const uint NoSize = 0x01, NoMove = 0x02, NoZOrder = 0x04, NoActivate = 0x10, NoOwnerZOrder = 0x200;
+    private const uint NoSize = 0x01, NoMove = 0x02, NoActivate = 0x10, NoOwnerZOrder = 0x200;
     private const uint NextWindow = 2;
     private const int ExtendedStyle = -20, TopmostStyle = 0x08;
     private static readonly IntPtr Topmost = new IntPtr(-1), NotTopmost = new IntPtr(-2), Bottom = new IntPtr(1);
@@ -59,31 +54,10 @@ internal static class PetWindow
         IntPtr window = new IntPtr(handle);
         if (GetWindowThreadProcessId(window, out owner) == 0 || owner != parent) return 2;
 
-        // Coordinates from Electron are converted to physical pixels before entering the pipe.
-        SetProcessDpiAwarenessContext(new IntPtr(-4));
-        bool dragging = false;
-        int startX = 0, startY = 0;
-        Rect original = new Rect();
         string input;
         while ((input = Console.ReadLine()) != null && GetWindowThreadProcessId(window, out owner) != 0 && owner == parent)
         {
-            if (input == "top" || input == "bottom") { ChooseLayer(window, input == "top"); continue; }
-            if (input == "end") { dragging = false; continue; }
-
-            string[] command = input.Split(' ');
-            int x, y;
-            if (command.Length != 3 || !int.TryParse(command[1], out x) || !int.TryParse(command[2], out y)) continue;
-            if (command[0] == "begin")
-            {
-                dragging = GetWindowRect(window, out original);
-                startX = x;
-                startY = y;
-            }
-            else if (command[0] == "move" && dragging)
-            {
-                SetWindowPos(window, IntPtr.Zero, original.Left + x - startX, original.Top + y - startY,
-                    original.Right - original.Left, original.Bottom - original.Top, NoZOrder | NoActivate | NoOwnerZOrder);
-            }
+            if (input == "top" || input == "bottom") ChooseLayer(window, input == "top");
         }
         return 0;
     }

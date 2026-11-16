@@ -424,7 +424,6 @@ function renderState() {
   $("#body-toggle").checked = Boolean(settings.bodyOnly);
   $("#click-through-toggle").checked = settings.preventClickThrough !== false;
   const viewerButton = $("#connect");
-  viewerButton.classList.toggle("connected", view.state.viewerLinked);
   viewerButton.setAttribute("aria-pressed", String(view.state.viewerLinked));
   viewerButton.title = view.state.viewerLinked ? (view.standalone ? "断开 Live2DViewerEX 控制" : "已连接 Live2DViewerEX") : "连接 Live2DViewerEX";
   const visibility = $("#pet-visibility");
@@ -486,6 +485,12 @@ function resetModelView() {
   model.scale.set(scale);
   model.anchor.set(.5, 1);
   model.position.set(x + width / 2, y + height * .98);
+  if (view.petWindow) {
+    const style = host.parentElement.style;
+    style.setProperty("--pet-left", `${x}px`);
+    style.setProperty("--pet-width", `${width}px`);
+    style.setProperty("--pet-bottom", `${y + height}px`);
+  }
 }
 
 function disposeModels(models) {
@@ -547,11 +552,13 @@ async function loadModel(key) {
   try {
     if (!window.PIXI?.live2d) throw new Error("Live2D 预览组件未载入");
     if (!view.app) {
+      const resolution = Math.min(devicePixelRatio, 2);
+      const pixelLimit = view.petWindow ? Math.sqrt(2_500_000 / (host.clientWidth * host.clientHeight)) : resolution;
       view.app = new PIXI.Application({
         resizeTo: view.petWindow ? null : host,
         width: host.clientWidth, height: host.clientHeight,
         backgroundAlpha: 0, clearBeforeRender: true, antialias: true,
-        resolution: Math.min(devicePixelRatio, 2), autoDensity: true, preserveDrawingBuffer: true,
+        resolution: Math.min(resolution, pixelLimit), autoDensity: true, preserveDrawingBuffer: true,
       });
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
@@ -577,12 +584,15 @@ async function loadModel(key) {
     disposeModels(outgoing);
     host.onpointermove = (event) => {
       if (!view.model || !$("#model-loading").hidden) return;
-      const rectangle = host.getBoundingClientRect();
-      if (event.clientX < rectangle.left || event.clientX > rectangle.right || event.clientY < rectangle.top || event.clientY > rectangle.bottom) {
+      const hostBounds = host.getBoundingClientRect();
+      const { x, y, width, height } = view.sizePreview ?? { x: 0, y: 0, width: hostBounds.width, height: hostBounds.height };
+      const horizontal = (event.clientX - hostBounds.left - x) / width;
+      const vertical = (event.clientY - hostBounds.top - y) / height;
+      if (horizontal < 0 || horizontal > 1 || vertical < 0 || vertical > 1) {
         view.model.internalModel.focusController.focus(0, 0);
         return;
       }
-      view.model.internalModel.focusController.focus((event.clientX - rectangle.left) / rectangle.width * 2 - 1, 1 - (event.clientY - rectangle.top) / rectangle.height * 2);
+      view.model.internalModel.focusController.focus(horizontal * 2 - 1, 1 - vertical * 2);
     };
     host.onpointerleave = () => view.model?.internalModel.focusController.focus(0, 0);
     host.onpointercancel = host.onpointerleave;
@@ -599,7 +609,11 @@ async function loadModel(key) {
     function hitRegion(event) {
       if (!view.model || !$("#model-loading").hidden) return;
       const rectangle = host.getBoundingClientRect();
-      const point = view.model.toModelPosition(new PIXI.Point(event.clientX - rectangle.left, event.clientY - rectangle.top));
+      const x = event.clientX - rectangle.left;
+      const y = event.clientY - rectangle.top;
+      const frame = view.sizePreview;
+      if (frame && (x < frame.x || x > frame.x + frame.width || y < frame.y || y > frame.y + frame.height)) return;
+      const point = view.model.toModelPosition(new PIXI.Point(x, y));
       const internal = view.model.internalModel;
       if (costume.cubism3) {
         point.x = (point.x - internal.originalWidth / 2) / internal.pixelsPerUnit;
@@ -954,6 +968,10 @@ async function stopAll() {
 }
 
 async function boot() {
+  if (view.petWindow && window.desktopPet.getFrame) {
+    const frame = await window.desktopPet.getFrame();
+    view.sizePreview ??= frame;
+  }
   const mode = await api("mode");
   view.standalone = mode.standalone;
   const query = new URLSearchParams(location.search);
@@ -1154,11 +1172,20 @@ new ResizeObserver(([{ target }]) => {
   resetModelView();
 }).observe($("#canvas-host"));
 if (view.petWindow) {
-  let pendingSizeFrame;
-  window.desktopPet.watchSize((bounds) => {
-    view.sizePreview = bounds;
-    if (pendingSizeFrame) return;
-    pendingSizeFrame = requestAnimationFrame(() => { pendingSizeFrame = null; resetModelView(); });
+  let nextFrame, animate, pendingSizeFrame;
+  const dimensions = ["x", "y", "width", "height"];
+  function drawFrame() {
+    pendingSizeFrame = null;
+    const previous = view.sizePreview;
+    const moving = animate && previous && nextFrame && dimensions.some(key => Math.abs(nextFrame[key] - previous[key]) >= .5);
+    view.sizePreview = moving ? Object.fromEntries(dimensions.map(key => [key, previous[key] + (nextFrame[key] - previous[key]) * .38])) : nextFrame;
+    resetModelView();
+    if (moving) pendingSizeFrame = requestAnimationFrame(drawFrame);
+  }
+  window.desktopPet.watchSize((bounds, animated) => {
+    nextFrame = bounds;
+    animate = animated;
+    if (!pendingSizeFrame) pendingSizeFrame = requestAnimationFrame(drawFrame);
   });
 }
 new ResizeObserver(updateTabIndicator).observe($(".tabs"));
