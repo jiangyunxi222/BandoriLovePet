@@ -425,6 +425,11 @@ function renderState() {
   $("#connect-label").textContent = view.state.linked ? "桌面已连接" : view.state.reconnecting ? "桌面重连中" : "连接桌面";
   $("#connect").title = view.state.desktopProvider === "pet" ? "已连接独立桌宠" :
     view.state.linked ? `控制桌面模型位 ${view.state.slot + 1}` : "连接所选桌面播放器";
+  if (window.desktopPet || !view.standalone) {
+    const exitPet = $("#exit-preview");
+    exitPet.textContent = "退出桌宠";
+    exitPet.hidden = view.petWindow || view.state.desktopProvider !== "pet";
+  }
   if (view.volume) view.volume.gain.value = view.state.linked ? 0 : 1;
   $("#game-name").textContent = view.catalog.game;
   $("#band-name").textContent = view.catalog.group.replace(/（Garupa）/g, "");
@@ -543,6 +548,12 @@ async function loadModel(key) {
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
       view.app.renderer.textureGC.checkCountMax = 300;
+      if (view.petWindow) {
+        new ResizeObserver(() => {
+          view.app.resize();
+          resetModelView();
+        }).observe(host);
+      }
     }
     const url = `/api/preview/${view.catalog.id}/${currentCostume().id}`;
     const metadata = await fetch(url).then((response) => response.json());
@@ -924,7 +935,7 @@ async function boot() {
     document.body.classList.add("standalone-preview");
     $("#connect").hidden = !window.desktopPet || view.petWindow || !view.state.role;
     if (window.desktopPet) $("#desktop-provider").value = "pet";
-    $("#exit-preview").hidden = false;
+    $("#exit-preview").hidden = Boolean(window.desktopPet);
     $(".breadcrumb").hidden = !view.state.role;
     $("#import-role").hidden = !view.state.role;
     $(".content").hidden = !view.state.role;
@@ -973,6 +984,11 @@ for (const id of ["#import-first-role", "#import-role"]) {
   $(id).addEventListener("click", () => $("#role-zip").click());
 }
 $("#exit-preview").addEventListener("click", safely(async () => {
+  if (view.state.desktopProvider === "pet") {
+    view.state = await api("disconnect-pet", {});
+    renderState();
+    return;
+  }
   await api("exit", {});
   view.events?.close();
   audio.pause();

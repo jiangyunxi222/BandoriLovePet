@@ -102,9 +102,13 @@ function showPet(port) {
 function resizePet(factor) {
   if (!pet) return;
   const bounds = pet.getBounds();
-  const height = Math.min(1200, Math.max(180, Math.round(bounds.height * factor)));
+  const { workArea } = screen.getDisplayMatching(bounds);
+  const maxHeight = Math.min(1200, workArea.height, Math.floor(workArea.width / 0.745));
+  const height = Math.min(maxHeight, Math.max(180, Math.round(bounds.height * factor)));
   const width = Math.round(height * 0.745);
-  pet.setBounds({ ...bounds, width, height });
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, bounds.y + bounds.height - height));
+  pet.setBounds({ x, y, width, height });
   preferences.bounds = pet.getBounds();
   save();
 }
@@ -229,14 +233,14 @@ async function start() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开控制台", click: () => showManager() },
     { label: "导入或更换角色", click: () => showManager(ownPort) },
-    { label: "隐藏桌宠", click: () => pet?.close() },
+    { label: "退出桌宠", click: () => pet?.close() },
     { label: "置顶", type: "checkbox", checked: preferences.onTop !== false, click: ({ checked }) => {
       preferences.onTop = checked; pet?.setAlwaysOnTop(checked); save();
     } },
     { label: "放大", click: () => resizePet(1.12) },
     { label: "缩小", click: () => resizePet(0.89) },
     { type: "separator" },
-    { label: "退出", click: () => app.quit() },
+    { label: "退出程序", click: () => app.quit() },
   ]));
   tray.on("click", () => showManager());
   if (preferences.package) {

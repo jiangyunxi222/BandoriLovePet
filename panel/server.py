@@ -1674,6 +1674,15 @@ class Handler(BaseHTTPRequestHandler):
                                 pass
                             STUDIO.emit("connection")
                             result = STUDIO.snapshot()
+                elif self.path == "/api/disconnect-pet":
+                    if STUDIO.pet_linked:
+                        try:
+                            desktop_pet.request("detach", port=PORT)
+                        except ConnectionError:
+                            pass
+                        STUDIO.pet_linked = False
+                        STUDIO.emit("connection")
+                    result = STUDIO.snapshot()
                 elif self.path == "/api/thumbnail":
                     result = STUDIO.save_thumbnail(
                         data["role"], int(data["costume"]), data["image"]
