@@ -243,6 +243,7 @@ class Studio:
         self.standalone = standalone
         self.import_lock = threading.Lock()
         self.active_package = None
+        self.folder_assets = None
         self.changed = threading.Condition(self.lock)
         self.events = []
         self.sequence = 0
@@ -312,7 +313,7 @@ class Studio:
             raise ValueError("另一个角色包正在加载")
         staged = None
         try:
-            staged = tempfile.TemporaryDirectory(prefix="BandoriLove-role-")
+            staged = tempfile.TemporaryDirectory(prefix="BandoriLove-role-", ignore_cleanup_errors=True)
             folder = Path(staged.name)
             archive = folder / "role.zip"
             with archive.open("wb") as stream:
@@ -328,36 +329,54 @@ class Studio:
             if WEB != HERE / "web":
                 desktop_pet.import_runtime(archive, HERE / ".local/runtime")
             archive.unlink()
-            with self.lock:
-                previous = self.active_package
-                self.disconnect_viewer()
-                self.viewer_session = None
-                if self.pet_linked:
-                    try:
-                        desktop_pet.request("detach", port=PORT)
-                    except ConnectionError:
-                        pass
-                    self.pet_linked = False
-                for kind in self.jobs:
-                    self.jobs[kind] += 1
-                    self.looping[kind] = False
-                for timer in self.timers.values():
-                    timer.cancel()
-                self.timers.clear()
-                self.cursors.clear()
-                self.playing.clear()
-                self.costume_due = False
-                self.current = role["id"]
-                self.roles = {self.current: role}
-                self.roots = {self.current: root}
-                self.catalogs = {self.current: catalog}
-                self.active_package, staged = staged, None
+            previous = self.activate_role(root, role, catalog, temporary=staged)
+            staged = None
             if previous is not None:
                 previous.cleanup()
         finally:
             if staged is not None:
                 staged.cleanup()
             self.import_lock.release()
+
+    def import_role_folder(self, entry):
+        if not self.standalone or not self.import_lock.acquire(blocking=False):
+            raise ValueError("另一个角色包正在加载")
+        try:
+            root, role, catalog, assets = role_package.inspect_folder(entry)
+            desktop_pet.import_folder_runtime(root, HERE / ".local/runtime")
+            previous = self.activate_role(root, role, catalog, folder_assets=assets)
+            if previous is not None:
+                previous.cleanup()
+        finally:
+            self.import_lock.release()
+
+    def activate_role(self, root, role, catalog, *, temporary=None, folder_assets=None):
+        with self.lock:
+            previous = self.active_package
+            self.disconnect_viewer()
+            self.viewer_session = None
+            if self.pet_linked:
+                try:
+                    desktop_pet.request("detach", port=PORT)
+                except ConnectionError:
+                    pass
+                self.pet_linked = False
+            for kind in self.jobs:
+                self.jobs[kind] += 1
+                self.looping[kind] = False
+            for timer in self.timers.values():
+                timer.cancel()
+            self.timers.clear()
+            self.cursors.clear()
+            self.playing.clear()
+            self.costume_due = False
+            self.current = role["id"]
+            self.roles = {self.current: role}
+            self.roots = {self.current: root}
+            self.catalogs = {self.current: catalog}
+            self.active_package = temporary
+            self.folder_assets = folder_assets
+            return previous
 
     def catalog(self, role_id=None):
         role_id = role_id or self.current
@@ -1493,7 +1512,9 @@ class Studio:
     def preview(self, role_id, costume_id):
         role = self.catalog(role_id)
         costume = next(c for c in role["costumes"] if c["id"] == costume_id)
-        model = read(self.root(role_id) / costume["file"])
+        root = self.root(role_id)
+        path = role_package.folder_file(root, costume["file"]) if self.folder_assets is not None else root / costume["file"]
+        model = read(path)
         c3 = "FileReferences" in model
         refs = model["FileReferences"] if c3 else model
         groups = refs.get("Motions" if c3 else "motions", {})
@@ -1646,6 +1667,8 @@ class Handler(BaseHTTPRequestHandler):
                 if STUDIO.standalone and not role_package.preview_asset(relative):
                     raise ValueError("资源不存在")
                 with STUDIO.lock:
+                    if STUDIO.folder_assets is not None and relative not in STUDIO.folder_assets:
+                        raise ValueError("资源不存在")
                     root = STUDIO.root(role_id)
                     file = (root / relative).resolve()
                     if not file.is_relative_to(root) or not file.is_file():
@@ -1728,6 +1751,21 @@ class Handler(BaseHTTPRequestHandler):
                 except (zipfile.BadZipFile, NotImplementedError, RuntimeError, AttributeError, IndexError,
                         KeyError, TypeError, json.JSONDecodeError) as error:
                     raise ValueError("无法读取角色 ZIP，请重新下载角色包") from error
+                return self.respond(200, {"imported": True})
+            if path == "/api/import-folder":
+                self.close_connection = True
+                token = os.environ.get("BANDORILOVE_ROLE_IMPORT_TOKEN", "")
+                supplied = self.headers.get("Authorization", "")
+                if (not STUDIO.standalone or origin is not None or not token
+                        or not secrets.compare_digest(supplied.encode(), f"Bearer {token}".encode())):
+                    return self.respond(403, {"error": "请通过桌宠程序选择父模型文件"})
+                if not 0 < length <= 131072:
+                    raise ValueError("父模型路径无效")
+                try:
+                    entry = json.loads(self.rfile.read(length))["entry"]
+                    STUDIO.import_role_folder(Path(entry))
+                except (AttributeError, IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("无法读取角色目录，请选择完整角色包的父模型 JSON") from error
                 return self.respond(200, {"imported": True})
             if path == "/api/exit" and STUDIO.standalone:
                 with STUDIO.lock:

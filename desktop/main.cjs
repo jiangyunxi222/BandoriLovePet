@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Tray, ipcMain, screen, dialog, nativeImage } = require("electron");
 const { spawn } = require("node:child_process");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
-const { createServer, request } = require("node:http");
+const { createServer } = require("node:http");
 const { createReadStream, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } = require("node:fs");
 const path = require("node:path");
 
@@ -11,6 +11,7 @@ const profile = path.join(home, "profile");
 const descriptor = path.join(home, "connection.json");
 const statusFile = path.join(home, "preferences.json");
 const token = randomBytes(32).toString("hex");
+const roleImportToken = randomBytes(32).toString("hex");
 mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
@@ -243,20 +244,24 @@ async function toggleTrayPet() {
   if (current && pet === current && !current.isDestroyed()) current.close();
 }
 
-function restorePackage(file) {
-  return new Promise((resolve, reject) => {
-    const size = statSync(file).size;
-    const upload = request(base(ownPort) + "/api/import", {
-      method: "POST", headers: { "Content-Type": "application/zip", "X-Studio-Request": "1", "Content-Length": size },
-    }, (response) => {
-      response.resume();
-      response.on("end", () => response.statusCode === 200 ? resolve() : reject(new Error("上次的角色包无法打开")));
-    });
-    upload.on("error", reject);
-    const input = createReadStream(file);
-    input.on("error", (error) => upload.destroy(error));
-    input.pipe(upload);
+async function importRole(file) {
+  const zip = path.extname(file).toLowerCase() === ".zip";
+  const headers = { "X-Studio-Request": "1" };
+  let body;
+  if (zip) {
+    headers["Content-Type"] = "application/zip";
+    headers["Content-Length"] = String(statSync(file).size);
+    body = createReadStream(file);
+  } else {
+    headers["Content-Type"] = "application/json";
+    headers.Authorization = `Bearer ${roleImportToken}`;
+    body = JSON.stringify({ entry: file });
+  }
+  const response = await fetch(`${base(ownPort)}/api/${zip ? "import" : "import-folder"}`, {
+    method: "POST", headers, body, duplex: "half",
   });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "无法导入角色包");
 }
 
 function startBridge() {
@@ -304,6 +309,24 @@ function startBridge() {
 }
 
 function installHandlers() {
+  ipcMain.handle("pet:pick-role", async (event) => {
+    if (event.sender !== manager?.webContents || managerPort !== ownPort) return false;
+    const { canceled, filePaths } = await dialog.showOpenDialog(manager, {
+      title: "选择角色 ZIP 或解压目录中的父模型",
+      properties: ["openFile"],
+      filters: [
+        { name: "角色 ZIP 或父模型 JSON", extensions: ["zip", "json"] },
+        { name: "单角色 ZIP", extensions: ["zip"] },
+        { name: "父模型 JSON", extensions: ["json"] },
+      ],
+    });
+    if (canceled) return false;
+    const [file] = filePaths;
+    await importRole(file);
+    preferences.package = file;
+    save();
+    return true;
+  });
   ipcMain.handle("pet:remember", (event, file) => {
     if (event.sender !== manager?.webContents || typeof file !== "string" || path.extname(file).toLowerCase() !== ".zip") return;
     preferences.package = file;
@@ -377,7 +400,9 @@ async function start() {
   const endpoint = path.join(profile, ".local", "endpoint.json");
   rmSync(endpoint, { force: true });
   backend = spawn(path.join(bundled, "ControlPanel.exe"), ["--panel-dir", profile, "--no-browser"], {
-    windowsHide: true, env: { ...process.env, BANDORILOVE_WEB_DIR: path.join(bundled, "web") },
+    windowsHide: true, env: {
+      ...process.env, BANDORILOVE_WEB_DIR: path.join(bundled, "web"), BANDORILOVE_ROLE_IMPORT_TOKEN: roleImportToken,
+    },
   });
   let failed = false;
   backend.on("error", () => { failed = true; });
@@ -409,7 +434,7 @@ async function start() {
   tray.on("right-click", (_event, bounds) => showTrayMenu(bounds));
   tray.on("click", () => { trayMenu?.close(); showManager(); });
   if (preferences.package) {
-    try { await restorePackage(preferences.package); } catch { /* The original ZIP may have been moved. */ }
+    try { await importRole(preferences.package); } catch { /* The original package may have been moved. */ }
   }
   showManager();
 }

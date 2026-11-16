@@ -12,5 +12,6 @@ contextBridge.exposeInMainWorld("desktopPet", {
   watchSize: (callback) => { ipcRenderer.on("pet:size-preview", (_event, bounds, animate) => callback(bounds, animate)); },
   drag: (operation, x, y) => ipcRenderer.send("pet:drag", operation, x, y),
   zoom: (direction) => ipcRenderer.send("pet:zoom", direction),
+  pickRole: () => ipcRenderer.invoke("pet:pick-role"),
   rememberPackage: (file) => ipcRenderer.invoke("pet:remember", webUtils.getPathForFile(file)),
 });

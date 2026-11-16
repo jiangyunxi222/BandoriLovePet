@@ -1,4 +1,4 @@
-"""Extract one verified role ZIP for the local browser preview."""
+"""Read one verified role package for the local browser preview."""
 
 import hashlib
 import json
@@ -30,6 +30,66 @@ def preview_asset(relative):
     return len(parts) > 1 and parts[0] == "assets" and Path(relative).suffix.lower() in SAFE_WEB_ASSETS
 
 
+def role_index(read_json, contains):
+    manifest = read_json("manifest.json")
+    files = manifest["files_sha256"]
+    index = "Preview" if contains("Preview/library.json") else "ControlPanel"
+    library_path = f"{index}/library.json"
+    library = read_json(library_path)
+    if not isinstance(library, list) or len(library) != 1:
+        raise ValueError("角色包缺少单角色索引")
+    role = library[0]
+    identity = role["id"]
+    if not role_id(identity):
+        raise ValueError("角色编号无效")
+    catalog_path = f"{index}/data/{identity}.json"
+    catalog = read_json(catalog_path)
+    if (catalog["id"] != identity or catalog["directory"] != "."
+            or catalog["entry"] != role["entry"] or not catalog["costumes"]):
+        raise ValueError("角色包索引无效")
+    entries = {catalog["entry"], *(costume["file"] for costume in catalog["costumes"])}
+    for name in entries:
+        if len(safe_parts(name)) != 1 or not name.endswith((".model.json", ".model3.json")):
+            raise ValueError("角色模型路径无效")
+    chosen = entries | {library_path, catalog_path} | {name for name in files if name.startswith("assets/")}
+    for name in chosen:
+        safe_parts(name)
+    return role, catalog, {name: files[name] for name in sorted(chosen)}
+
+
+def folder_file(root, name):
+    file = root.joinpath(*safe_parts(name)).resolve()
+    if not file.is_relative_to(root) or not file.is_file():
+        raise ValueError(f"角色目录缺少有效文件：{name}")
+    return file
+
+
+def inspect_folder(entry):
+    if not entry.is_absolute() or not entry.is_file() or not entry.name.lower().endswith((".model.json", ".model3.json")):
+        raise ValueError("请选择解压目录中的父模型 JSON")
+    root = entry.parent.resolve()
+
+    def read_json(name):
+        file = folder_file(root, name)
+        if file.stat().st_size > 12 * 1024**2:
+            raise ValueError("角色包索引过大")
+        return json.loads(file.read_bytes())
+
+    role, catalog, files = role_index(read_json, lambda name: (root / name).is_file())
+    if entry.name.casefold() != catalog["entry"].casefold():
+        raise ValueError(f"请选择父模型 {catalog['entry']}")
+    size = 0
+    for name, expected in files.items():
+        file = folder_file(root, name)
+        size += file.stat().st_size
+        if size > MAX_BYTES:
+            raise ValueError("角色包超过 2 GB")
+        with file.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+                raise ValueError(f"角色包文件校验失败：{name}")
+    return root, role, catalog, frozenset(name for name in files if name.startswith("assets/"))
+
+
 def extract(archive_path, destination):
     with zipfile.ZipFile(archive_path) as archive:
         members = {}
@@ -55,30 +115,8 @@ def extract(archive_path, destination):
                 raise ValueError("角色包索引过大")
             return json.loads(archive.read(entry))
 
-        manifest = read_json("manifest.json")
-        files = manifest["files_sha256"]
-        index_dir = "Preview" if prefix + "Preview/library.json" in members else "ControlPanel"
-        library_path = f"{index_dir}/library.json"
-        library = read_json(library_path)
-        if not isinstance(library, list) or len(library) != 1:
-            raise ValueError("角色包缺少单角色索引")
-        identity = library[0]["id"]
-        if not role_id(identity):
-            raise ValueError("角色编号无效")
-        catalog_path = f"{index_dir}/data/{identity}.json"
-        catalog = read_json(catalog_path)
-        if (catalog["id"] != identity or catalog["directory"] != "."
-                or catalog["entry"] != library[0]["entry"] or not catalog["costumes"]):
-            raise ValueError("角色包索引无效")
-        entries = {catalog["entry"], *(costume["file"] for costume in catalog["costumes"])}
-        for name in entries:
-            if len(safe_parts(name)) != 1 or not name.endswith((".model.json", ".model3.json")):
-                raise ValueError("角色模型路径无效")
-        chosen = entries | {library_path, catalog_path}
-        chosen.update(name for name in files if name.startswith("assets/"))
-        items = [(name, members[prefix + name], files[name]) for name in sorted(chosen)]
-        for name, _, _ in items:
-            safe_parts(name)
+        role, catalog, files = role_index(read_json, lambda name: prefix + name in members)
+        items = [(name, members[prefix + name], expected) for name, expected in files.items()]
         if sum(entry.file_size for _, entry, _ in items) > MAX_BYTES:
             raise ValueError("解压后的角色包超过 2 GB")
         for name, entry, expected in items:
@@ -91,4 +129,4 @@ def extract(archive_path, destination):
                     file.write(chunk)
             if digest.hexdigest() != expected:
                 raise ValueError(f"角色包文件校验失败：{name}")
-        return library[0], catalog
+        return role, catalog

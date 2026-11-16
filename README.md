@@ -3,7 +3,7 @@
 Windows 版独立 Live2D 桌宠，支持 BandoriLove 的 Garupa 与 OurNotes 单角色发行 ZIP。
 
 1. 下载并运行 `setup.exe`。
-2. 在开始菜单打开 BandoriLove Desktop Pet，选择原始角色 ZIP。
+2. 在开始菜单打开 BandoriLove Desktop Pet，选择单角色 ZIP，或解压后角色目录里的 `00_integrated.model3.json` / `00_integrated.model.json`。直接选择父模型时，软件会从原目录读取资源。请保留角色目录内的资源和索引。
 3. 点击「显示桌宠」。关闭面板窗口后，桌宠保持显示。
 
 按住角色用左键拖动，Ctrl 加滚轮缩放。右键或点击腿部菜单区打开面板。右键托盘 b* 图标后，可以直接拖动菜单里的「桌宠大小」滑杆。

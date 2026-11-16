@@ -996,6 +996,10 @@ async function boot() {
     $("#import-role").hidden = !view.state.role;
     $(".content").hidden = !view.state.role;
     $("#role-welcome").hidden = Boolean(view.state.role);
+    if (window.desktopPet?.pickRole) {
+      $("#import-formats").textContent = "选择单角色 ZIP，或解压目录中的 00_integrated 父模型 JSON。";
+      $("#import-first-role").textContent = "选择角色包";
+    }
     if (!view.state.role) return;
   }
   if (query.get("role") !== view.state.role && view.library.some((role) => role.id === query.get("role"))) {
@@ -1037,7 +1041,10 @@ async function boot() {
 }
 
 for (const id of ["#import-first-role", "#import-role"]) {
-  $(id).addEventListener("click", () => $("#role-zip").click());
+  $(id).addEventListener("click", () => {
+    if (window.desktopPet?.pickRole) loadRolePackage("正在导入角色…", () => window.desktopPet.pickRole());
+    else $("#role-zip").click();
+  });
 }
 $("#exit-preview").addEventListener("click", safely(async () => {
   await api("exit", {});
@@ -1049,28 +1056,36 @@ $("#exit-preview").addEventListener("click", safely(async () => {
   status.hidden = false;
   status.textContent = "控制台已退出，可以关闭此页面。";
 }));
-$("#role-zip").addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
+async function loadRolePackage(message, load) {
   const status = $("#role-import-status");
   delete status.dataset.error;
   status.hidden = false;
-  status.textContent = `正在加载 ${file.name}…`;
+  status.textContent = message;
   $("#import-first-role").disabled = $("#import-role").disabled = true;
   try {
+    if (await load()) location.replace("/");
+    else status.hidden = true;
+  } catch (error) {
+    status.dataset.error = "";
+    status.textContent = error.message.replace(/^Error invoking remote method '[^']+': Error: /, "") || "角色包加载失败";
+  } finally {
+    $("#import-first-role").disabled = $("#import-role").disabled = false;
+  }
+}
+
+$("#role-zip").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = "";
+  loadRolePackage(`正在加载 ${file.name}…`, async () => {
     const response = await fetch("/api/import", {
       method: "POST", headers: { "Content-Type": "application/zip", "X-Studio-Request": "1" }, body: file,
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
     await window.desktopPet?.rememberPackage(file);
-    location.replace("/");
-  } catch (error) {
-    status.dataset.error = "";
-    status.textContent = error.message || "角色包加载失败";
-    event.target.value = "";
-    $("#import-first-role").disabled = $("#import-role").disabled = false;
-  }
+    return true;
+  });
 });
 
 document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
