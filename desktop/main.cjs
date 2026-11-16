@@ -60,7 +60,7 @@ function showManager(port = selectedPort || ownPort, viewer = false) {
   if (!manager || manager.isDestroyed()) {
     manager = new BrowserWindow({
       width: 1050, height: 750, minWidth: 600, minHeight: 440,
-      title: "BandoriLove 桌宠", autoHideMenuBar: true,
+      title: "BandoriLovePet", autoHideMenuBar: true,
       icon: path.join(bundled, "ControlPanel.ico"), webPreferences: windowOptions,
     });
     guardNavigation(manager, () => managerPort);
@@ -108,7 +108,7 @@ function showPet(port) {
     pet = new BrowserWindow({
       ...petScene.surface, show: false, transparent: true, frame: false, resizable: false,
       backgroundColor: "#00000000",
-      title: "BandoriLove 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
+      title: "BandoriLovePet 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
       alwaysOnTop: preferences.layer === "top",
       webPreferences: windowOptions,
     });
@@ -546,7 +546,7 @@ function installHandlers() {
       case "open": showManager(); break;
       case "import": showManager(ownPort); break;
       case "toggle-pet":
-        toggleTrayPet().catch(error => dialog.showErrorBox("BandoriLove 桌宠", error.message));
+        toggleTrayPet().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
         break;
       case "top":
       case "bottom":
@@ -595,7 +595,7 @@ async function start() {
   screen.on("display-removed", updatePetDisplay);
   startBridge();
   tray = new Tray(nativeImage.createFromPath(path.join(bundled, "ControlPanel.ico")));
-  tray.setToolTip("BandoriLove 桌宠");
+  tray.setToolTip("BandoriLovePet");
   tray.on("right-click", (_event, bounds) => showTrayMenu(bounds));
   tray.on("click", () => { trayMenu?.close(); showManager(); });
   if (preferences.package) {
@@ -620,7 +620,7 @@ else {
     }).catch(() => backend?.kill()).finally(() => app.quit());
   });
   app.whenReady().then(start).catch((error) => {
-    dialog.showErrorBox("BandoriLove 桌宠", error.message);
+    dialog.showErrorBox("BandoriLovePet", error.message);
     app.quit();
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "bandorilove-desktop-pet",
-  "productName": "BandoriLove Desktop Pet",
+  "productName": "BandoriLovePet",
   "version": "0.1.1",
   "description": "Standalone Windows player for BandoriLove Live2D role packages",
   "main": "desktop/main.cjs",

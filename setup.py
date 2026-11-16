@@ -10,6 +10,8 @@ import sys
 import tempfile
 import zipfile
 
+PLAYER = "BandoriLovePet.exe"
+LEGACY_PLAYER = "BandoriLoveDesktopPet.exe"
 
 def install(target):
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -18,7 +20,13 @@ def install(target):
         staging = Path(temporary) / "player"
         with zipfile.ZipFile(payload) as archive:
             archive.extractall(staging)
-        assert (staging / "BandoriLoveDesktopPet.exe").is_file()
+        if not (staging / PLAYER).is_file():
+            raise OSError("安装包缺少 BandoriLovePet.exe")
+        if (target / LEGACY_PLAYER).is_file():
+            try:
+                os.link(staging / PLAYER, staging / LEGACY_PLAYER)
+            except OSError:
+                shutil.copyfile(staging / PLAYER, staging / LEGACY_PLAYER)
         backup = Path(temporary) / "previous"
         if target.exists():
             target.rename(backup)
@@ -36,10 +44,14 @@ def shortcuts(executable):
         "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
         "$shell = New-Object -ComObject WScript.Shell",
         "; $menu = $shell.SpecialFolders.Item('Programs')",
-        "; $shortcut = $shell.CreateShortcut((Join-Path $menu 'BandoriLove Desktop Pet.lnk'))",
+        "; $shortcut = $shell.CreateShortcut((Join-Path $menu 'BandoriLovePet.lnk'))",
         "; $shortcut.TargetPath = $env:BANDORILOVE_INSTALLED_PLAYER",
         "; $shortcut.WorkingDirectory = Split-Path $shortcut.TargetPath",
         "; $shortcut.Save()",
+        "; $legacy = Join-Path $menu 'BandoriLove Desktop Pet.lnk'",
+        "; if (Test-Path -LiteralPath $legacy -PathType Leaf) {",
+        "  $oldTarget = Join-Path $shortcut.WorkingDirectory 'BandoriLoveDesktopPet.exe'",
+        "; if ($shell.CreateShortcut($legacy).TargetPath -eq $oldTarget) { Remove-Item -LiteralPath $legacy } }",
     ], env=env, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
 
 
@@ -53,14 +65,14 @@ def main():
     target = (args.target or default).resolve()
     try:
         install(target)
-        executable = target / "BandoriLoveDesktopPet.exe"
+        executable = target / PLAYER
         if args.target is None:
             shortcuts(executable)
         if not args.no_launch:
             subprocess.Popen([str(executable)], cwd=target)
     except (OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         if not args.silent:
-            ctypes.windll.user32.MessageBoxW(None, str(error), "BandoriLove 安装失败", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, str(error), "BandoriLovePet 安装失败", 0x10)
         return 1
     return 0
 

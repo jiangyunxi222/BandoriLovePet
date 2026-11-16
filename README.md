@@ -1,9 +1,9 @@
-# BandoriLove Desktop Pet
+# BandoriLovePet
 
 Windows 版独立 Live2D 桌宠，支持 BandoriLove 的 Garupa 与 OurNotes 单角色发行 ZIP。
 
-1. 下载并运行 `setup.exe`。
-2. 在开始菜单打开 BandoriLove Desktop Pet，选择单角色 ZIP、Live2D 模型 JSON，或 ViewerEX 的 LPK、WPK。直接选择 JSON 时，软件会从原目录读取资源。
+1. 下载并运行 `BandoriLovePet-Setup.exe`。覆盖安装前，请从托盘退出正在运行的旧版。
+2. 在开始菜单打开 BandoriLovePet，选择单角色 ZIP、Live2D 模型 JSON，或 ViewerEX 的 LPK、WPK。直接选择 JSON 时，软件会从原目录读取资源。
 3. 点击「显示桌宠」。关闭面板窗口后，桌宠保持显示。
 
 BandoriLove 角色请保留 `00_integrated.model3.json` 或 `00_integrated.model.json` 及其角色索引和素材，会加载完整的角色控制台。普通 Live2D JSON 仅提供模型预览、显示和退出桌宠。全新安装首次使用普通 JSON 前，请先导入一次完整的 BandoriLove 角色包，载入 Web 运行库。
@@ -39,4 +39,4 @@ python -m pip install pyinstaller
 pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEditor "D:\rcedit-x64.exe"
 ```
 
-输出为 `dist/setup.exe`。发行包不附带角色素材或 Live2D 专有运行库。导入兼容角色 ZIP 时，会校验并使用该包随附的已知网页运行库。第三方组件信息见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
+输出为 `dist/BandoriLovePet-Setup.exe`。发行包不附带角色素材或 Live2D 专有运行库。导入兼容角色 ZIP 时，会校验并使用该包随附的已知网页运行库。第三方组件信息见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。

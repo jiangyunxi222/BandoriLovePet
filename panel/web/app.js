@@ -424,7 +424,7 @@ function renderState() {
   const visibility = $("#pet-visibility");
   visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
   visibility.setAttribute("aria-pressed", String(view.state.petLinked));
-  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLove";
+  document.title = view.catalog.name.replace(/（Garupa）/g, "") + (window.desktopPet ? " · BandoriLovePet" : " · BandoriLove");
   if (renderOnly) {
     $("#connect").hidden = true;
     return;
@@ -1030,6 +1030,10 @@ async function stopAll() {
 }
 
 async function boot() {
+  if (window.desktopPet) {
+    document.title = "BandoriLovePet";
+    $(".brand span").textContent = "BandoriLovePet";
+  }
   if (view.petWindow && window.desktopPet.getFrame) {
     const frame = await window.desktopPet.getFrame();
     view.sizePreview ??= frame;

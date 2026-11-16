@@ -21,8 +21,8 @@ if (Test-Path -LiteralPath (Join-Path $stage "resources/app")) { throw "Use a fr
 Get-ChildItem -LiteralPath $electron | Where-Object { $_.Name -notin @("resources","PetProfile") } |
     Copy-Item -Destination $stage -Recurse
 $binary = Get-ChildItem -LiteralPath $stage -File -Filter "*.exe" | Select-Object -First 1
-Rename-Item -LiteralPath $binary.FullName -NewName "BandoriLoveDesktopPet.exe"
-& $resourceEditor (Join-Path $stage "BandoriLoveDesktopPet.exe") --set-icon $icon --set-version-string FileDescription "BandoriLove Desktop Pet" --set-version-string ProductName "BandoriLove Desktop Pet"
+Rename-Item -LiteralPath $binary.FullName -NewName "BandoriLovePet.exe"
+& $resourceEditor (Join-Path $stage "BandoriLovePet.exe") --set-icon $icon --set-version-string FileDescription "BandoriLovePet" --set-version-string ProductName "BandoriLovePet" --set-version-string OriginalFilename "BandoriLovePet.exe"
 if ($LASTEXITCODE) { throw "Windows application icon update failed" }
 $resources = Join-Path $stage "resources"
 $desktop = Join-Path $resources "app"
@@ -42,6 +42,6 @@ if ($LASTEXITCODE) { throw "Control Panel build failed" }
 $zip = Join-Path $build "player.zip"
 python -c "import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); files=(p for p in root.rglob('*') if p.is_file()); archive=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED,compresslevel=3); [archive.write(p,p.relative_to(root)) for p in files]; archive.close()" $stage $zip
 if ($LASTEXITCODE) { throw "Player archive build failed" }
-python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name setup --add-data "$zip;." --distpath $dist --workpath (Join-Path $build "setup-work") --specpath $build (Join-Path $root "setup.py")
+python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name BandoriLovePet-Setup --add-data "$zip;." --distpath $dist --workpath (Join-Path $build "setup-work") --specpath $build (Join-Path $root "setup.py")
 if ($LASTEXITCODE) { throw "Installer build failed" }
-Get-FileHash -LiteralPath (Join-Path $dist "setup.exe")
+Get-FileHash -LiteralPath (Join-Path $dist "BandoriLovePet-Setup.exe")
