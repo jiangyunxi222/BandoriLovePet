@@ -181,7 +181,7 @@ def extract(archive_path, destination):
             members[entry.filename] = entry
         manifests = [name for name in members if name.split("/")[-1] == "manifest.json" and name.count("/") <= 1]
         if len(manifests) != 1:
-            raise ValueError("请选择只包含一个角色的 BandoriLove ZIP")
+            raise ValueError("ZIP 仅支持 BandoriLove 单角色发行包。第三方 ZIP 请解压后选择模型 JSON。")
         manifest_name = manifests[0]
         prefix = manifest_name.removesuffix("manifest.json")
 

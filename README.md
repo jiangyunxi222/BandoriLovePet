@@ -2,11 +2,11 @@
 
 Windows 版独立 Live2D 桌宠，支持 BandoriLove 的 Garupa 与 OurNotes 单角色发行 ZIP。
 
-1. 下载并运行 `BandoriLovePet-Setup.exe`。覆盖安装前，请从托盘退出正在运行的旧版。
+1. 下载并运行 `BandoriLovePet-Setup.exe`，选择安装目录。安装向导默认勾选创建桌面快捷方式。覆盖安装前，请从托盘退出旧版，沿用原安装目录。安装后可从 Windows「设置 → 应用 → 已安装的应用」卸载 BandoriLovePet，模型和个人设置会保留。
 2. 在开始菜单打开 BandoriLovePet，选择单角色 ZIP、Live2D 模型 JSON，或 ViewerEX 的 LPK、WPK。直接选择 JSON 时，软件会从原目录读取资源。
 3. 点击「显示桌宠」。关闭面板窗口后，桌宠保持显示。
 
-BandoriLove 角色请保留 `00_integrated.model3.json` 或 `00_integrated.model.json` 及其角色索引和素材，会加载完整的角色控制台。普通 Live2D JSON 仅提供模型预览、显示和退出桌宠。全新安装首次使用普通 JSON 前，请先导入一次完整的 BandoriLove 角色包，载入 Web 运行库。
+ZIP 仅支持 BandoriLove 单角色发行包。其他 ZIP 请先解压，再选择模型 JSON。BandoriLove 角色请选择 `00_integrated.model3.json` 或 `00_integrated.model.json`，并保留角色索引和素材。普通 Live2D 模型提供预览、显示及退出桌宠。首次导入 Cubism 3 及以上的普通模型时会联网下载官方运行库；Cubism 2 模型需要先导入一次完整的 BandoriLove 发行包。
 
 LPK、WPK 会用包内第一个可渲染的 Live2D 模型提供同样的预览和桌宠功能。单独导入创意工坊 LPK 时，请把对应的 `config.json` 放在同目录。完整 WPK 自带配置。
 
@@ -32,11 +32,13 @@ pwsh -File .\Update-ControlPanel.ps1 -RoleDirectory "D:\我的角色\若叶睦"
 
 ## 构建
 
-使用 Windows x64、Python、PyInstaller、[Electron rcedit](https://github.com/electron/rcedit/releases) 和 Windows x64 Electron 的解包目录。
+使用 Windows x64、Python、PyInstaller、[Inno Setup 6.7](https://jrsoftware.org/inno-setup/downloads)、[Electron rcedit](https://github.com/electron/rcedit/releases) 和 Windows x64 Electron 的解包目录。
+
+如果 Inno Setup 的 `Languages` 目录缺少 `ChineseSimplified.isl`，从翻译页下载简体中文文件放入该目录。 [Inno Setup 翻译](https://jrsoftware.org/inno-setup/translations)
 
 ```powershell
 python -m pip install pyinstaller
-pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEditor "D:\rcedit-x64.exe"
+pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEditor "D:\rcedit-x64.exe" -InnoSetupCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 输出为 `dist/BandoriLovePet-Setup.exe`。发行包不附带角色素材或 Live2D 专有运行库。导入兼容角色 ZIP 时，会校验并使用该包随附的已知网页运行库。第三方组件信息见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。

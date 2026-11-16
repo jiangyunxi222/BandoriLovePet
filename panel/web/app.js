@@ -1081,7 +1081,7 @@ function updateRoleVisibility() {
     $(".content").hidden = !view.state.role;
     $("#role-welcome").hidden = Boolean(view.state.role);
     if (window.desktopPet?.pickRole) {
-      $("#import-formats").textContent = "选择 ZIP 角色包、Live2D 模型 JSON 或 ViewerEX 的 LPK、WPK 模型包。";
+      $("#import-formats").textContent = "选择 Live2D 模型 JSON、LPK 或 WPK。ZIP 仅支持 BandoriLove 单角色发行包。";
       $("#import-first-role").textContent = "选择文件";
     }
   }
@@ -1160,6 +1160,10 @@ async function loadRolePackage(message, load) {
       view.thumbnails.clear();
       view.scrollPositions.clear();
       view.state = await api("state");
+      if (!window.Live2D && !view.state.renderOnly) {
+        location.replace("/");
+        return;
+      }
       updateRoleVisibility();
       await applySelection(view.state, true);
       watchRoleEvents();

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ElectronDirectory,
     [Parameter(Mandatory = $true)][string]$ResourceEditor,
+    [Parameter(Mandatory = $true)][string]$InnoSetupCompiler,
     [string]$PanelSource = "",
     [string]$PyInstallerModules = ""
 )
@@ -12,6 +13,7 @@ $dist = Join-Path $root "dist"
 $stage = Join-Path $build "player"
 $electron = (Resolve-Path -LiteralPath $ElectronDirectory).Path
 $resourceEditor = (Resolve-Path -LiteralPath $ResourceEditor).Path
+$installerCompiler = (Resolve-Path -LiteralPath $InnoSetupCompiler).Path
 $panel = (Resolve-Path -LiteralPath $PanelSource).Path
 $icon = Join-Path $panel "ControlPanel.ico"
 if ($PyInstallerModules) { $env:PYTHONPATH = (Resolve-Path -LiteralPath $PyInstallerModules).Path }
@@ -39,9 +41,7 @@ foreach ($runtime in @("live2d.min.js","live2dcubismcore.min.js")) {
 }
 python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name ControlPanel --distpath $backend --workpath (Join-Path $build "backend-work") --specpath $build (Join-Path $panel "server.py")
 if ($LASTEXITCODE) { throw "Control Panel build failed" }
-$zip = Join-Path $build "player.zip"
-python -c "import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); files=(p for p in root.rglob('*') if p.is_file()); archive=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED,compresslevel=3); [archive.write(p,p.relative_to(root)) for p in files]; archive.close()" $stage $zip
-if ($LASTEXITCODE) { throw "Player archive build failed" }
-python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name BandoriLovePet-Setup --add-data "$zip;." --distpath $dist --workpath (Join-Path $build "setup-work") --specpath $build (Join-Path $root "setup.py")
+$version = (Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json).version
+& $installerCompiler "/DAppVersion=$version" (Join-Path $root "installer.iss")
 if ($LASTEXITCODE) { throw "Installer build failed" }
 Get-FileHash -LiteralPath (Join-Path $dist "BandoriLovePet-Setup.exe")

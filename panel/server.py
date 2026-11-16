@@ -369,7 +369,6 @@ class Studio:
                 root = Path(staged.name) / "role"
                 role, catalog = self.read_role_archive(entry, root)
             elif suffix in {".lpk", ".wpk"}:
-                desktop_pet.require_cached_runtime(runtime)
                 staged = tempfile.TemporaryDirectory(prefix="BandoriLove-viewer-package-", ignore_cleanup_errors=True)
                 destination = Path(staged.name) / "preview"
                 loader = viewer_package.wpk_preview if suffix == ".wpk" else viewer_package.lpk_preview
@@ -382,7 +381,8 @@ class Studio:
                 desktop_pet.import_folder_runtime(root, runtime)
             else:
                 root, role, catalog, assets, plain_preview = role_package.inspect_plain_model(entry)
-                desktop_pet.require_cached_runtime(runtime)
+            if plain_preview is not None:
+                desktop_pet.require_runtime(runtime, modern=catalog["costumes"][0]["cubism3"])
             previous = self.activate_role(root, role, catalog, temporary=staged, folder_assets=assets, plain_preview=plain_preview)
             staged = None
             if previous is not None:
@@ -1733,6 +1733,8 @@ class Handler(BaseHTTPRequestHandler):
             if STUDIO.standalone and WEB != HERE / "web" and path.startswith("/vendor/"):
                 name = path.removeprefix("/vendor/")
                 if name == "index.min.js" and not (HERE / ".local/runtime/live2d.min.js").is_file():
+                    if (HERE / ".local/runtime/live2dcubismcore.min.js").is_file():
+                        return self.respond(200, (WEB / "vendor/cubism4.min.js").read_bytes(), "application/javascript")
                     return self.respond(200, b"", "application/javascript")
                 if name in desktop_pet.RUNTIMES:
                     script = HERE / ".local/runtime" / name

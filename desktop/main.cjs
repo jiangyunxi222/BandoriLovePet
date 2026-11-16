@@ -472,7 +472,7 @@ function installHandlers() {
       properties: ["openFile"],
       filters: [
         { name: "角色包和模型", extensions: ["zip", "json", "lpk", "wpk"] },
-        { name: "单角色 ZIP", extensions: ["zip"] },
+        { name: "BandoriLove 单角色发行 ZIP", extensions: ["zip"] },
         { name: "Live2D 模型 JSON", extensions: ["json"] },
         { name: "ViewerEX 模型包", extensions: ["lpk", "wpk"] },
       ],
