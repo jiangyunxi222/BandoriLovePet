@@ -314,10 +314,12 @@ body.desktop-pet .studio-layout, body.desktop-pet .stage, body.desktop-pet #canv
   width: 100%;
   height: 100%;
   max-width: none;
+  max-height: none;
   min-height: 0;
   margin: 0;
   padding: 0;
 }
+body.desktop-pet .studio-layout { display: block; }
 body.desktop-pet .topbar, body.desktop-pet .control-panel, body.desktop-pet .bottom-bar,
 body.desktop-pet .stage-floor, body.desktop-pet .stage-orbit, body.desktop-pet .stage-spark {
   display: none;
