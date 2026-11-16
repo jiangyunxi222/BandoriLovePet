@@ -1020,7 +1020,6 @@ function updateSubtitle() {
   const visible = Boolean(view.visibleVoice && view.state?.settings.captions && !audio.ended);
   $("#subtitle").hidden = !visible;
   if (visible) {
-    if (!view.petWindow) $("#subtitle-speaker").textContent = view.catalog.name.replace(/（Garupa）/g, "");
     $("#subtitle-text").textContent = view.visibleVoice.caption || view.visibleVoice.name;
   }
 }

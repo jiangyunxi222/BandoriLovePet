@@ -333,29 +333,32 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
   display: none;
 }
 .subtitle {
-  position:absolute;
-  bottom:65px;
-  left:20px;
-  right:20px;
-  border-radius:13px;
-  padding:14px 18px;
-  background:#fffefdf0;
-  box-shadow:0 5px 24px #a4778b12;
-  border:1px solid #fff;
-  z-index:4;
-  backdrop-filter:blur(14px)
+  position: absolute;
+  bottom: 65px;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - 40px);
+  transform: translateX(-50%);
+  border-radius: 12px;
+  padding: 8px 13px;
+  background: rgba(35, 35, 35, .76);
+  z-index: 4;
+  pointer-events: none;
 }
-.subtitle>span {
-  font-size:10px;
-  letter-spacing:1px;
-  color:var(--accent)
+html[data-desktop-pet] .subtitle {
+  left: calc(var(--pet-left) + var(--pet-width) / 2);
+  bottom: calc(100% - var(--pet-bottom) + 36px);
+  max-width: calc(var(--pet-width) - 24px);
 }
 .subtitle p {
-  font-size:12px;
-  line-height:1.9;
-  margin:6px 0 0;
-  white-space:pre-line;
-  color:#6d5a70
+  margin: 0;
+  color: #fff;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  line-height: 1.55;
+  text-align: center;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .stage-error {
   position:absolute;
@@ -1117,11 +1120,7 @@ html[data-desktop-pet] :is(.topbar, .control-panel, .bottom-bar, .stage-floor, .
     gap:10px
   }
   .subtitle {
-    bottom:50px;
-    padding:10px 15px
-  }
-  .subtitle p {
-    font-size:11px
+    bottom:50px
   }
   .stage-error p {
     font-size:11px
@@ -1335,8 +1334,6 @@ body[data-switching] #canvas-host {
 .order-buttons { border-radius: 9px; }
 .order-buttons button { border-radius: 7px; }
 .setting-switch, .stop-button { font-size: 12px; }
-.subtitle { border-radius: 15px; background: #ffffffda; border: 1px solid #ffffffc9; backdrop-filter: blur(12px); box-shadow: 0 8px 28px #67466b0d; }
-.subtitle p { font-size: 14px; line-height: 1.75; }
 @keyframes picture-in { from { opacity: 0; } to { opacity: 1; } }
 @media (max-height:800px) and (min-width:761px) {
   .topbar { height: 63px; }
@@ -1384,32 +1381,6 @@ body[data-switching] #canvas-host {
 .search input, .loop-options label, .order-setting { font-family: var(--font-ui); }
 .loop-options label, .order-setting, .order-buttons button { font-size: 12px; }
 .heart-filter, .subtle-button, .setting-switch, .stop-button { color: #8e709b; }
-.subtitle p { font-family: var(--font-ui); font-size: 15px; line-height: 1.8; }
-
-html[data-desktop-pet] .subtitle {
-  left: calc(var(--pet-left) + var(--pet-width) / 2);
-  right: auto;
-  bottom: calc(100% - var(--pet-bottom) + 36px);
-  width: max-content;
-  max-width: calc(var(--pet-width) - 24px);
-  transform: translateX(-50%);
-  border: 0;
-  border-radius: 12px;
-  padding: 8px 13px;
-  background: rgba(58, 35, 53, .86);
-  box-shadow: none;
-  backdrop-filter: none;
-  pointer-events: none;
-}
-html[data-desktop-pet] .subtitle > span { display: none; }
-html[data-desktop-pet] .subtitle p {
-  margin: 0;
-  color: #fff;
-  font-size: 17px;
-  line-height: 1.55;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
 @media (max-width:650px) {
   .tabs button { font-size: 13px; }
   .item-main strong, .voice-copy strong { font-size: 13px; }
