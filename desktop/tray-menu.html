@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BandoriLove 托盘菜单</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 6px; height: 100vh; color: #322934; background: #fffafb; border: 1px solid #e7dce5; border-radius: 12px; font: 13px "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+    main { height: 100%; display: flex; flex-direction: column; }
+    button, .layer { min-height: 32px; padding: 0 10px; display: flex; align-items: center; border-radius: 6px; }
+    button { border: 0; background: transparent; width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    button:hover:not(:disabled), .layer:hover { background: #f3eaf1; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #b46689; outline-offset: -2px; }
+    button:disabled { color: #9d929d; cursor: default; }
+    fieldset, .size-control { margin: 4px 0 0; padding: 4px 0 0; border: 0; border-top: 1px solid #eee4eb; min-width: 0; }
+    .layer { gap: 8px; cursor: pointer; }
+    .layer input { margin: 0; accent-color: #b46286; }
+    .size-control { padding: 8px 10px 4px; }
+    .size-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    output { color: #915470; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #size { display: block; margin: 8px 0 1px; height: 18px; width: 100%; accent-color: #bf6b8e; cursor: pointer; }
+    #size:disabled { cursor: default; }
+    footer { margin-top: auto; padding-top: 4px; border-top: 1px solid #eee4eb; }
+  </style>
+</head>
+<body>
+  <main aria-label="桌宠托盘菜单">
+    <button data-action="open">打开控制台</button>
+    <button data-action="import">导入或更换角色</button>
+    <button data-action="hide" disabled>退出桌宠</button>
+    <fieldset aria-label="桌宠层级">
+      <label class="layer"><input type="radio" name="layer" value="top">浮于最上层</label>
+      <label class="layer"><input type="radio" name="layer" value="bottom">浮于最下层</label>
+    </fieldset>
+    <div class="size-control">
+      <div class="size-heading"><label for="size">桌宠大小</label><output for="size" id="percentage">显示桌宠后可调整</output></div>
+      <input type="range" id="size" disabled>
+    </div>
+    <footer><button data-action="quit">退出程序</button></footer>
+  </main>
+  <script>
+    const slider = document.querySelector('#size');
+    const percentage = document.querySelector('#percentage');
+    function showValue() {
+      percentage.value = `${slider.value}%`;
+      slider.setAttribute('aria-valuetext', percentage.value);
+    }
+    const layers = document.querySelectorAll('input[name="layer"]');
+    window.petTray.state().then((state) => {
+      if (!state) return;
+      for (const layer of layers) layer.checked = layer.value === state.layer;
+      if (!state.size) return;
+      slider.min = state.size.min;
+      slider.max = state.size.max;
+      slider.value = state.size.value;
+      slider.disabled = false;
+      document.querySelector('[data-action="hide"]').disabled = false;
+      showValue();
+    });
+    for (const button of document.querySelectorAll('[data-action]')) {
+      button.addEventListener('click', () => window.petTray.action(button.dataset.action));
+    }
+    for (const layer of layers) {
+      layer.addEventListener('click', () => window.petTray.action(layer.value));
+    }
+    slider.addEventListener('input', () => {
+      showValue();
+      window.petTray.setSize(slider.valueAsNumber);
+    });
+    slider.addEventListener('change', () => window.petTray.saveSize());
+    addEventListener('keydown', (event) => { if (event.key === 'Escape') window.petTray.action('close'); });
+  </script>
+</body>
+</html>

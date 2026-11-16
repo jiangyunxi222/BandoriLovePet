@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, screen, dialog, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, ipcMain, screen, dialog, nativeImage } = require("electron");
 const { spawn } = require("node:child_process");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
 const { createServer, request } = require("node:http");
@@ -15,7 +15,7 @@ mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
 let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
-let sizePopup, petScene, petDrag, saveBoundsTimer;
+let trayMenu, petScene, petDrag, saveBoundsTimer;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
@@ -130,7 +130,7 @@ function showPet(port) {
       petScene = petDrag = null;
       nativeWindow.stdin.end();
       pet = petWindowProcess = selectedPort = null;
-      sizePopup?.close();
+      trayMenu?.close();
     });
   }
   pet.loadURL(base(port) + "/?pet=1").then(() => {
@@ -190,28 +190,28 @@ function movePet(x, y) {
   scheduleBoundsSave();
 }
 
-function showPetSize() {
-  if (sizePopup && !sizePopup.isDestroyed()) { sizePopup.focus(); return; }
-  const anchor = tray.getBounds();
+function showTrayMenu(bounds) {
+  if (trayMenu && !trayMenu.isDestroyed()) { trayMenu.focus(); return; }
+  const anchor = bounds?.width && bounds?.height ? bounds : { ...screen.getCursorScreenPoint(), width: 0, height: 0 };
   const { workArea } = screen.getDisplayMatching(anchor);
-  const width = 288, height = 108;
+  const width = 236, height = 290;
   const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, anchor.x + anchor.width - width));
-  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height - 8, anchor.y - height - 8));
+  const preferredY = anchor.y - height - 6 >= workArea.y ? anchor.y - height - 6 : anchor.y + anchor.height + 6;
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, preferredY));
   const popup = new BrowserWindow({
     x, y, width, height, show: false, frame: false, resizable: false, skipTaskbar: true,
-    alwaysOnTop: true, backgroundColor: "#faf7fa",
-    webPreferences: { preload: path.join(__dirname, "size-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
+    alwaysOnTop: true, transparent: true, backgroundColor: "#00000000",
+    webPreferences: { preload: path.join(__dirname, "tray-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
-  sizePopup = popup;
+  trayMenu = popup;
   popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   popup.webContents.on("will-navigate", (event) => event.preventDefault());
   popup.on("blur", () => popup.close());
   popup.on("closed", () => {
-    if (sizePopup !== popup) return;
-    sizePopup = null;
+    if (trayMenu === popup) trayMenu = null;
   });
   popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
-  popup.loadFile(path.join(__dirname, "size.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
+  popup.loadFile(path.join(__dirname, "tray-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
 }
 
 function panelState(port) {
@@ -312,22 +312,38 @@ function installHandlers() {
     setPetHeight(petScene.height * factor, true);
   });
   ipcMain.handle("pet:frame", (event) => event.sender === pet?.webContents && petScene ? petFrame() : null);
-  ipcMain.handle("pet:size:get", (event) => {
-    if (event.sender !== sizePopup?.webContents || !petScene) return null;
+  ipcMain.handle("tray:state", (event) => {
+    if (event.sender !== trayMenu?.webContents) return null;
     return {
-      min: Math.ceil(180 / defaultPetHeight * 100),
-      max: Math.floor(maximumPetHeight(petScene.display.workArea) / defaultPetHeight * 100),
-      value: Math.round(petScene.height / defaultPetHeight * 100),
+      layer: preferences.layer,
+      size: petScene ? {
+        min: Math.ceil(180 / defaultPetHeight * 100),
+        max: Math.floor(maximumPetHeight(petScene.display.workArea) / defaultPetHeight * 100),
+        value: Math.round(petScene.height / defaultPetHeight * 100),
+      } : null,
     };
   });
   ipcMain.on("pet:size:set", (event, percent) => {
-    if (event.sender === sizePopup?.webContents && Number.isFinite(percent)) setPetHeight(percent / 100 * defaultPetHeight, false);
+    if (event.sender === trayMenu?.webContents && Number.isFinite(percent)) setPetHeight(percent / 100 * defaultPetHeight, false);
   });
   ipcMain.on("pet:size:commit", (event) => {
-    if (event.sender === sizePopup?.webContents) savePetBounds();
+    if (event.sender === trayMenu?.webContents) savePetBounds();
   });
-  ipcMain.on("pet:size:close", (event) => {
-    if (event.sender === sizePopup?.webContents) sizePopup.close();
+  ipcMain.on("tray:action", (event, action) => {
+    if (event.sender !== trayMenu?.webContents) return;
+    trayMenu.close();
+    switch (action) {
+      case "open": showManager(); break;
+      case "import": showManager(ownPort); break;
+      case "hide": pet?.close(); break;
+      case "top":
+      case "bottom":
+        preferences.layer = action;
+        save();
+        applyPetLayer();
+        break;
+      case "quit": app.quit(); break;
+    }
   });
 }
 
@@ -366,22 +382,8 @@ async function start() {
   startBridge();
   tray = new Tray(nativeImage.createFromPath(path.join(bundled, "ControlPanel.ico")));
   tray.setToolTip("BandoriLove 桌宠");
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "打开控制台", click: () => showManager() },
-    { label: "导入或更换角色", click: () => showManager(ownPort) },
-    { label: "退出桌宠", click: () => pet?.close() },
-    ...[["top", "浮于最上层"], ["bottom", "浮于最下层"]].map(([layer, label]) => ({
-      label, type: "radio", checked: preferences.layer === layer, click: () => {
-        preferences.layer = layer;
-        save();
-        applyPetLayer();
-      },
-    })),
-    { label: "桌宠大小…", click: showPetSize },
-    { type: "separator" },
-    { label: "退出程序", click: () => app.quit() },
-  ]));
-  tray.on("click", () => showManager());
+  tray.on("right-click", (_event, bounds) => showTrayMenu(bounds));
+  tray.on("click", () => { trayMenu?.close(); showManager(); });
   if (preferences.package) {
     try { await restorePackage(preferences.package); } catch { /* The original ZIP may have been moved. */ }
   }
