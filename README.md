@@ -1,44 +1,86 @@
 # BandoriLovePet
 
-Windows 版独立 Live2D 桌宠，支持 BandoriLove 的 Garupa 与 OurNotes 单角色发行 ZIP。
+![BandoriLovePet · Windows 与 Android 的 Live2D 桌宠](docs/media/cover.png)
 
-1. 下载并运行 `BandoriLovePet-Setup.exe`，选择安装目录。安装向导默认勾选创建桌面快捷方式。覆盖安装前，请从托盘退出旧版，沿用原安装目录。安装后可从 Windows「设置 → 应用 → 已安装的应用」卸载 BandoriLovePet，模型和个人设置会保留。
-2. 在开始菜单打开 BandoriLovePet，选择单角色 ZIP、Live2D 模型 JSON，或 ViewerEX 的 LPK、WPK。直接选择 JSON 时，软件会从原目录读取资源。
-3. 点击「显示桌宠」。关闭面板窗口后，桌宠保持显示。
+BanG Dream! Live2D 桌宠。导入 Garupa 或 OurNotes 的单角色 ZIP，即可预览、换装、播放动作和语音，也能把角色留在桌面。
 
-ZIP 仅支持 BandoriLove 单角色发行包。其他 ZIP 请先解压，再选择模型 JSON。BandoriLove 角色请选择 `00_integrated.model3.json` 或 `00_integrated.model.json`，并保留角色索引和素材。普通 Live2D 模型提供预览、显示及退出桌宠。首次导入 Cubism 3 及以上的普通模型时会联网下载官方运行库；Cubism 2 模型需要先导入一次完整的 BandoriLove 发行包。
+**[Windows 安装包](https://github.com/jiangyunxi222/BandoriLovePet/releases/tag/Windows_V261116)** · **[Android 预发布版](https://github.com/jiangyunxi222/BandoriLovePet/releases/tag/Android_V261116)**
 
-LPK、WPK 会用包内第一个可渲染的 Live2D 模型提供同样的预览和桌宠功能。单独导入创意工坊 LPK 时，请把对应的 `config.json` 放在同目录。完整 WPK 自带配置。
+## 角色库
 
-按住角色用左键拖动，Shift 加滚轮缩放。右键或点击腿部菜单区打开面板。右键托盘 b* 图标后，可以直接拖动菜单里的「桌宠大小」滑杆。
+- **Garupa** 收录 Poppin’Party、Roselia、Pastel＊Palettes 等《少女乐团派对！》角色。[角色 ZIP](https://github.com/jiangyunxi222/GarupaLive2D/releases/latest)
+- **OurNotes** 收录夢限大みゅーたいぷ、millsage、一家Dumb Rock! 等《BanG Dream! Our Notes》角色。[角色 ZIP](https://github.com/jiangyunxi222/OurNotesLive2D/releases/latest)
 
-托盘菜单可选「浮于最上层」或「浮于最下层」，应用会记住选择。最下层仍显示在桌面上，其他应用窗口可以盖住角色。
+MyGO!!!!! 与 Ave Mujica 在两库均有收录，模型和衣装随游戏版本而异。
 
-「退出桌宠」只关闭独立桌宠的角色窗口。可以再次点击「显示桌宠」打开。从托盘菜单选择「退出程序」可关闭整个应用。
+## 角色实录
 
-右侧「Live2DViewerEX」用于控制 ViewerEX 里已加载的角色。先在 ViewerEX 加载同一角色包解压出的 `00_integrated` 模型，再点右侧按钮。此时控制区的指令发送给 ViewerEX，左侧仍可单独显示或退出独立桌宠。
+![Windows 实录。长崎爽世播放动作并切换衣装](docs/media/windows-demo.gif)
 
-## 已有角色包的 Control Panel
+*MyGO!!!!! · 长崎爽世（Garupa）· Windows 动作与换装实录*
 
-安装桌宠后，关闭该角色的 Control Panel，下载 `Update-ControlPanel.ps1` 并运行。
+## 安装与使用
+
+### Windows
+
+1. 运行 `BandoriLovePet-Setup.exe`。安装向导可选目录和桌面快捷方式。
+2. 点「选择模型」导入从角色发布页下载的单角色 ZIP，再点「显示桌宠」。独立桌宠无需安装 Live2DViewerEX。
+3. 左键拖动角色，**Shift + 滑轮**缩放，点击腿部打开完整角色包的菜单。右击托盘 **b\*** 可调大小和层级。
+
+关闭主窗口会退到托盘。「退出桌宠」收起角色，「退出程序」关闭软件。覆盖安装前先退出旧版并沿用原目录。可在 Windows「设置 → 应用 → 已安装的应用」卸载，模型与个人设置会保留。
+
+### Android
+
+1. 在 Android 11 及以上安装 `BandoriLovePet.apk`，打开应用并选择角色 ZIP。
+2. 点「显示桌宠」并授予浮窗权限。单指拖动，双指缩放。
+3. 完整角色包点腿部开菜单。第三方模型点角色后，胸前会短暂出现三点按钮。可从应用或桌宠通知退出。
+
+## 导入格式
+
+| 文件 | Windows | Android |
+| --- | --- | --- |
+| Garupa / OurNotes 发布页的单角色 ZIP | 直接导入，含角色控制 | 直接导入，含角色控制 |
+| 解压后的 `00_integrated.model.json` / `00_integrated.model3.json` | 选择父模型 JSON，保留完整角色目录 | 请选择原发布 ZIP |
+| 普通 Live2D 模型 JSON | 选择 `*.model.json` / `*.model3.json`，保留相对路径 | 请选兼容的 LPK / WPK |
+| LPK / WPK | 预览和独立桌宠 | 预览和独立桌宠 |
+
+角色 ZIP 请从发布页的 **Assets** 下载。第三方 ZIP 在 Windows 上需先解压，再选择模型 JSON。
+
+创意工坊 LPK 如需 `config.json`，请把对应配置放在同目录。普通 Cubism 3 及以上模型首次导入需联网获取官方运行库。经典 Cubism 2 需先导入一次完整角色发行包。
+
+## Live2DViewerEX 连接（Windows）
+
+1. 解压角色 ZIP，在 ViewerEX 中加载 `00_integrated` 父模型。
+2. 在 BandoriLovePet 导入同一角色，点击「Live2DViewerEX」。连接后可发送动作、换装和语音指令，应用内同步播放状态和字幕。
+3. 再点连接按钮断开。独立桌宠由「显示桌宠」「退出桌宠」控制。创意工坊订阅和壁纸模式可在 ViewerEX 中使用。
+
+![Windows 实测。连接时软件内预览显示 ViewerEX 正在播放的语音字幕](docs/media/viewerex-sync.png)
+
+<details>
+<summary>更新角色包控制台</summary>
+
+先安装 BandoriLovePet 并关闭该角色的 Control Panel。从 [Windows 发布页](https://github.com/jiangyunxi222/BandoriLovePet/releases/tag/Windows_V261116) 下载 `Update-ControlPanel.ps1`，再把角色目录传给脚本。
 
 ```powershell
 pwsh -File .\Update-ControlPanel.ps1 -RoleDirectory "D:\我的角色\若叶睦"
 ```
 
-重新打开角色的 Control Panel，顶部提供「显示桌宠」和「Live2DViewerEX」两个入口。连接独立桌宠前，在桌宠里导入同一角色。ViewerEX 路径继续使用原生播放器接口。
+重新打开角色的 Control Panel。顶部提供「显示桌宠」和「Live2DViewerEX」入口。连接独立桌宠前，请先在 BandoriLovePet 导入同一角色。
 
-首版支持 ZIP 导入，包含位置、大小、置顶、角色触控、动作、表情和语音。Steam 创意工坊订阅、壁纸模式和 ViewerEX 专用指令仍由 ViewerEX 提供。
+</details>
 
-## 构建
+<details>
+<summary>开发与构建</summary>
 
-使用 Windows x64、Python、PyInstaller、[Inno Setup 6.7](https://jrsoftware.org/inno-setup/downloads)、[Electron rcedit](https://github.com/electron/rcedit/releases) 和 Windows x64 Electron 的解包目录。
-
-如果 Inno Setup 的 `Languages` 目录缺少 `ChineseSimplified.isl`，从翻译页下载简体中文文件放入该目录。 [Inno Setup 翻译](https://jrsoftware.org/inno-setup/translations)
+Windows 构建需要 Windows x64、Python、PyInstaller、[Inno Setup](https://jrsoftware.org/inno-setup/downloads)、[Electron rcedit](https://github.com/electron/rcedit/releases) 和解包后的 Windows x64 Electron。若 Inno Setup 缺简体中文语言文件，从 [Inno Setup 翻译页](https://jrsoftware.org/inno-setup/translations) 取 `ChineseSimplified.isl`，放入其 `Languages` 目录。
 
 ```powershell
 python -m pip install pyinstaller
 pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEditor "D:\rcedit-x64.exe" -InnoSetupCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
-输出为 `dist/BandoriLovePet-Setup.exe`。发行包不附带角色素材或 Live2D 专有运行库。导入兼容角色 ZIP 时，会校验并使用该包随附的已知网页运行库。第三方组件信息见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
+Windows 输出为 `dist/BandoriLovePet-Setup.exe`。Android 构建见 [Android 分支说明](https://github.com/jiangyunxi222/BandoriLovePet/blob/feature/android-apk/android/README.md)。第三方组件见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
+
+</details>
+
+角色素材随角色包提供，演示中的角色与游戏素材权利归原权利人。这是同好制作的工具项目。
