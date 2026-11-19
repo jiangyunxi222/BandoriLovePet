@@ -1,53 +1,31 @@
-"""Local, offline control page for the resource libraries and Live2DViewerEX."""
+"""Local model storage and playback for BandoriLovePet."""
 
 import argparse
 import base64
 import copy
-import hashlib
 import json
 import mimetypes
 import math
 import os
 import random
 import secrets
-import socket
-import struct
 import tempfile
 import threading
 import time
 import sys
-import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
-import voice_library
+
 import role_package
 import viewer_package
-import desktop_pet
-from model_watch import (
-    claim_role_controller, endpoint_for, endpoint_record, instance_id, release_instance, restore_role_menu, viewer_bin,
-)
+import live2d_runtime
+from desktop_library import DesktopLibrary, MEDIA_TYPES
 
-HERE = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
-)
-RESTORE_VIEWER_MENU = None
-if __name__ == "__main__":
-    location_parser = argparse.ArgumentParser(add_help=False)
-    location_parser.add_argument("--panel-dir", type=Path)
-    location_parser.add_argument("--restore-viewer-menu", type=Path)
-    location_args, _ = location_parser.parse_known_args()
-    if location_args.panel_dir:
-        HERE = location_args.panel_dir.resolve()
-    RESTORE_VIEWER_MENU = location_args.restore_viewer_menu
-REPO = HERE.parent
+HERE = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 WEB = Path(os.environ.get("BANDORILOVE_WEB_DIR", HERE / "web"))
 PORT = 25000
-STANDALONE = (__name__ == "__main__" and (HERE / "standalone.mode").is_file())
-NATIVE = RESTORE_VIEWER_MENU or viewer_bin(HERE)
 KINDS = ("action", "expression", "costume", "voice")
 
 
@@ -55,15 +33,11 @@ def read(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def model_path(value):
-    if not value:
-        return ""
-    return str(Path(value).resolve()).replace("\\", "/").casefold()
-
 
 def panel_directory(root):
     current = root / "ControlPanel"
     return current if current.is_dir() else root / "控制台"
+
 
 
 def atomic_write(path, value):
@@ -73,180 +47,10 @@ def atomic_write(path, value):
     os.replace(temporary, path)
 
 
-def native_data(path):
-    try:
-        data = path.read_bytes()
-        key = data[0] ^ 123
-        return json.loads(bytes(value ^ key for value in data))
-    except (OSError, ValueError, IndexError):
-        return {}
-
-
-class Player:
-    def __init__(self):
-        self.socket = None
-        self.lock = threading.RLock()
-        self.port = 0
-        self.on_tap = None
-        self.last_received = time.monotonic()
-
-    def connect(self):
-        with self.lock:
-            self.close()
-            try:
-                self.port = int((NATIVE / "app_port").read_text().strip())
-                if not 1 <= self.port <= 65535:
-                    raise ValueError("Invalid ExAPI port")
-            except (OSError, ValueError):
-                self.port = 10086
-            connection = socket.create_connection(("127.0.0.1", self.port), timeout=3)
-            try:
-                key = base64.b64encode(secrets.token_bytes(16)).decode()
-                connection.sendall(
-                    (
-                        f"GET /api HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n\r\n"
-                    ).encode()
-                )
-                response = b""
-                while b"\r\n\r\n" not in response:
-                    chunk = connection.recv(4096)
-                    if not chunk:
-                        raise ConnectionError("播放器未响应")
-                    response += chunk
-                    if len(response) > 16384:
-                        raise ConnectionError("播放器握手无效")
-                expected = base64.b64encode(
-                    hashlib.sha1(
-                        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
-                    ).digest()
-                )
-                headers = {
-                    line.partition(b":")[0].lower(): line.partition(b":")[2].strip()
-                    for line in response.split(b"\r\n")[1:]
-                    if b":" in line
-                }
-                if (
-                    not response.startswith(b"HTTP/1.1 101")
-                    or headers.get(b"sec-websocket-accept") != expected
-                ):
-                    raise ConnectionError("播放器接口未就绪")
-                connection.settimeout(None)
-                self.socket = connection
-                self.last_received = time.monotonic()
-                threading.Thread(
-                    target=self.listen, args=(connection,), daemon=True
-                ).start()
-                self.send(10000, None)
-            except OSError:
-                connection.close()
-                if self.socket is connection:
-                    self.socket = None
-                raise
-
-    def close(self):
-        with self.lock:
-            connection = self.socket
-            self.socket = None
-        if connection:
-            try:
-                connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                connection.close()
-            except OSError:
-                pass
-
-    def send(self, message, data):
-        with self.lock:
-            if not self.socket:
-                raise ConnectionError("请先连接桌面播放器")
-            payload = json.dumps(
-                {
-                    "msg": message,
-                    "msgId": int(time.time() * 1000) % 2147483647,
-                    "data": data,
-                },
-                ensure_ascii=False,
-            ).encode()
-            mask = secrets.token_bytes(4)
-            size = len(payload)
-            header = (
-                bytes((129, 128 | size))
-                if size < 126
-                else bytes((129, 254)) + struct.pack("!H", size)
-            )
-            try:
-                self.socket.sendall(
-                    header
-                    + mask
-                    + bytes(value ^ mask[i % 4] for i, value in enumerate(payload))
-                )
-            except OSError:
-                self.close()
-                raise ConnectionError("桌面连接已断开，请重新连接")
-
-    def listen(self, connection):
-        def exact(size):
-            data = b""
-            while len(data) < size:
-                part = connection.recv(size - len(data))
-                if not part:
-                    raise ConnectionError()
-                data += part
-            return data
-
-        try:
-            while True:
-                header = exact(2)
-                length = header[1] & 127
-                if length == 126:
-                    length = struct.unpack("!H", exact(2))[0]
-                elif length == 127:
-                    length = struct.unpack("!Q", exact(8))[0]
-                if length > 1024 * 1024:
-                    raise ConnectionError()
-                mask = exact(4) if header[1] & 128 else None
-                payload = exact(length)
-                self.last_received = time.monotonic()
-                if mask:
-                    payload = bytes(
-                        value ^ mask[i % 4] for i, value in enumerate(payload)
-                    )
-                opcode = header[0] & 15
-                if opcode == 8:
-                    break
-                if opcode == 9:
-                    mask = secrets.token_bytes(4)
-                    with self.lock:
-                        connection.sendall(
-                            bytes((138, 128 | len(payload)))
-                            + mask
-                            + bytes(
-                                value ^ mask[i % 4] for i, value in enumerate(payload)
-                            )
-                        )
-                if opcode == 1 and self.on_tap:
-                    try:
-                        message = json.loads(payload)
-                        if isinstance(message, dict) and message.get("msg") == 10002:
-                            data = message.get("data") or {}
-                            if isinstance(data, dict):
-                                self.on_tap(data)
-                    except (ValueError, KeyError):
-                        pass
-        except (OSError, ConnectionError):
-            pass
-        finally:
-            with self.lock:
-                if self.socket is connection:
-                    self.close()
-
 
 class Studio:
-    def __init__(self, standalone=False):
+    def __init__(self):
         self.lock = threading.RLock()
-        self.standalone = standalone
         self.import_lock = threading.Lock()
         self.active_package = None
         self.folder_assets = None
@@ -257,28 +61,10 @@ class Studio:
         self.roles = {}
         self.roots = {}
         self.catalogs = {}
-        self.player = Player()
-        self.slot = None
-        self.linked = False
-        self.pet_linked = False
-        self.viewer_session = None
-        self.viewer_owner = None
-        self.viewer_entry = None
-        self.viewer_claim = None
-        self.viewer_menu_generation = None
-        self.pet_monitor_started = False
-        self.player.on_tap = self.on_native_tap
-        self.loading = False
-        self.reconnect_requested = False
-        self.monitor_started = False
-        candidates = [] if standalone else [REPO]
-        for root in dict.fromkeys(path.resolve() for path in candidates):
-            catalog = panel_directory(root) / "library.json"
-            if not catalog.exists():
-                continue
-            for role in read(catalog):
-                self.roles[role["id"]] = role
-                self.roots[role["id"]] = root
+        self.pet_showing = False
+        self.pet_visible = False
+        self.wallpaper_showing = False
+        self.wallpaper_active = False
         self.state_path = HERE / ".local/state.json"
         try:
             self.saved = read(self.state_path)
@@ -288,35 +74,18 @@ class Studio:
             self.saved = {}
         if not isinstance(self.saved.get("roles"), dict):
             self.saved["roles"] = {}
-        self.current = self.saved.get("current")
-        if not isinstance(self.current, str) or self.current not in self.roles:
-            self.current = next(
-                (
-                    key
-                    for key, role in self.roles.items()
-                    if role["game"] == "OurNotes" and role["name"] == "千早爱音"
-                ),
-                next(iter(self.roles), None),
-            )
+        self.current = None
+        self.library = DesktopLibrary(HERE)
+        self.model_record = None
         self.jobs = {kind: 0 for kind in ("action", "voice", "costume")}
         self.looping = {kind: False for kind in self.jobs}
         self.cursors = {}
         self.timers = {}
         self.costume_due = False
-        self.popup = None
-        self.input_router = None
-        self.input_epoch = 0
-        self.native_executable = NATIVE / "lw/lw.exe"
-        self.last_menu_request = None
-        self.last_panel_request = None
-        self.last_native_toggles = {}
-        self.next_reconnect_at = 0
         self.playing = {}
-        if not standalone and self.saved.get("desktop_requested"):
-            self.reconnect_requested = True
 
     def import_role(self, source, length):
-        if not self.standalone or not 0 < length <= role_package.MAX_BYTES:
+        if not 0 < length <= role_package.MAX_BYTES:
             raise ValueError("请选择不超过 2 GB 的角色 ZIP")
         if not self.import_lock.acquire(blocking=False):
             raise ValueError("另一个角色包正在加载")
@@ -345,14 +114,16 @@ class Studio:
                 staged.cleanup()
             self.import_lock.release()
 
+
     def read_role_archive(self, archive, root):
         role, catalog = role_package.extract(archive, root)
         if WEB != HERE / "web":
-            desktop_pet.import_runtime(archive, HERE / ".local/runtime")
+            live2d_runtime.import_runtime(archive, HERE / ".local/runtime")
         return role, catalog
 
+
     def import_selected_model(self, entry):
-        if not self.standalone or not self.import_lock.acquire(blocking=False):
+        if not self.import_lock.acquire(blocking=False):
             raise ValueError("另一个角色包正在加载")
         staged = None
         try:
@@ -374,16 +145,24 @@ class Studio:
                 loader = viewer_package.wpk_preview if suffix == ".wpk" else viewer_package.lpk_preview
                 preview_entry, title = loader(entry, destination)
                 root, role, catalog, assets, plain_preview = role_package.inspect_plain_model(preview_entry)
+                catalog["viewerPackage"] = True
+                assets = frozenset(file.name for file in destination.iterdir() if file.is_file())
                 name = title.strip()[:120] if title and title.strip() else entry.stem
                 role["name"] = catalog["name"] = catalog["costumes"][0]["name"] = name
             elif suffix == ".json" and role_package.is_indexed_folder(entry.parent):
                 root, role, catalog, assets = role_package.inspect_folder(entry)
-                desktop_pet.import_folder_runtime(root, runtime)
+                live2d_runtime.import_folder_runtime(root, runtime)
             else:
                 root, role, catalog, assets, plain_preview = role_package.inspect_plain_model(entry)
             if plain_preview is not None:
-                desktop_pet.require_runtime(runtime, modern=catalog["costumes"][0]["cubism3"])
-            previous = self.activate_role(root, role, catalog, temporary=staged, folder_assets=assets, plain_preview=plain_preview)
+                live2d_runtime.require_runtime(runtime, modern=catalog["costumes"][0]["cubism3"])
+            with self.lock:
+                record = self.library.remember(entry, role)
+                self.saved["sourceModel"] = record
+                self.saved["current"] = role["id"]
+                atomic_write(self.state_path, self.saved)
+                previous = self.activate_role(root, role, catalog, temporary=staged, folder_assets=assets,
+                                              plain_preview=plain_preview, record=record)
             staged = None
             if previous is not None:
                 previous.cleanup()
@@ -392,17 +171,10 @@ class Studio:
                 staged.cleanup()
             self.import_lock.release()
 
-    def activate_role(self, root, role, catalog, *, temporary=None, folder_assets=None, plain_preview=None):
+
+    def activate_role(self, root, role, catalog, *, temporary=None, folder_assets=None, plain_preview=None, record=None):
         with self.lock:
             previous = self.active_package
-            self.disconnect_viewer()
-            self.viewer_session = None
-            if self.pet_linked:
-                try:
-                    desktop_pet.request("detach", port=PORT)
-                except ConnectionError:
-                    pass
-                self.pet_linked = False
             for kind in self.jobs:
                 self.jobs[kind] += 1
                 self.looping[kind] = False
@@ -413,73 +185,48 @@ class Studio:
             self.playing.clear()
             self.costume_due = False
             self.current = role["id"]
+            self.model_record = record
             self.roles = {self.current: role}
             self.roots = {self.current: root}
             self.catalogs = {self.current: catalog}
             self.active_package = temporary
             self.folder_assets = folder_assets
             self.plain_preview = plain_preview
+            self.emit("selection")
             return previous
+
 
     def catalog(self, role_id=None):
         role_id = role_id or self.current
         if role_id not in self.roles:
             raise ValueError("角色不存在")
         if role_id not in self.catalogs:
-            voice_library.recover((self.roots[role_id] / self.roles[role_id]["directory"]).resolve())
             self.catalogs[role_id] = read(
                 panel_directory(self.roots[role_id]) / "data" / (role_id + ".json")
             )
         return self.catalogs[role_id]
 
+
     def root(self, role_id=None):
         role = self.catalog(role_id)
         return (self.roots[role["id"]] / role["directory"]).resolve()
 
+
     def settings(self, role_id=None):
         role_id = role_id or self.current
         if not isinstance(self.saved["roles"].get(role_id), dict):
-            values = {}
-            profiles = NATIVE / "save/cha"
-            favorites = set()
-            if not self.standalone and profiles.exists():
-                paths = [self.root(role_id) / self.catalog(role_id)["entry"]] + [
-                    self.root(role_id) / costume["file"]
-                    for costume in self.catalog(role_id)["costumes"]
-                ]
-                files = [
-                    profiles
-                    / hashlib.md5(str(path).replace("\\", "/").encode()).hexdigest()
-                    for path in paths
-                ]
-                for file in sorted(
-                    (file for file in files if file.exists()),
-                    key=lambda file: file.stat().st_mtime,
-                ):
-                    data = native_data(file)
-                    variables = data.get("varFloats") or {}
-                    values.update(variables)
-                    favorites.update(
-                        name
-                        for name, value in variables.items()
-                        if name.startswith("heart_fav_") and value == 1
-                    )
-            self.saved["roles"][role_id] = {
-                "costume": int(values.get("selected_costume", 1)),
-                "favorites": sorted(favorites),
-                "captions": bool(values.get("voice_captions_enabled", 1)),
-                "bodyOnly": bool(values.get("heart_body_only", 0)),
-                "actionScope": int(values.get("heart_action_scope", 0)),
-                "voiceScope": int(values.get("heart_voice_scope", 0)),
-            }
+            self.saved["roles"][role_id] = {}
         settings = self.saved["roles"][role_id]
         for key, default in (("costume", 1), ("captions", True), ("bodyOnly", False),
                              ("preventClickThrough", True),
+                             ("performanceEnabled", False),
                              ("actionScope", 0), ("voiceScope", 0), ("costumeScope", 0)):
             settings.setdefault(key, default)
             if key != "costume" and settings[key] not in (True, False, 0, 1):
                 settings[key] = default
-        for key in ("favorites", "dirty"):
+        if not isinstance(settings.get("performanceGroups"), dict):
+            settings["performanceGroups"] = {}
+        for key in ("favorites",):
             values = settings.get(key, [])
             settings[key] = list(dict.fromkeys(value for value in values if isinstance(value, str))) if isinstance(values, list) else []
         for kind, interval in (("action", 12), ("voice", 2.5), ("costume", 15)):
@@ -494,6 +241,7 @@ class Studio:
             settings["costume"] = min(valid)
         return settings
 
+
     def costume(self):
         return next(
             costume
@@ -501,36 +249,36 @@ class Studio:
             if costume["id"] == self.settings()["costume"]
         )
 
+
     def save(self):
         self.saved["current"] = self.current
         atomic_write(self.state_path, self.saved)
 
+
     def snapshot(self):
-        owner = self.viewer_owner or self
-        viewer = owner.viewer_session or owner
-        viewer_linked = viewer.linked and viewer.player.socket is not None
-        controlling_viewer = self.linked and self.player.socket is not None
-        controlling_pet = self.viewer_owner is None and self.pet_linked
         return {
-            "instance": instance_id(HERE),
             "role": self.current,
+            "modelRecord": self.model_record,
             "renderOnly": self.plain_preview is not None,
             "settings": copy.deepcopy(self.settings()) if self.current else {},
-            "linked": controlling_viewer or controlling_pet,
-            "petLinked": owner.pet_linked,
-            "viewerLinked": viewer_linked,
-            "desktopProvider": "viewerex" if controlling_viewer else "pet" if controlling_pet else None,
-            "reconnecting": self.reconnect_requested
-            and (not self.linked or self.player.socket is None),
-            "slot": self.slot,
+            "touchMenuEnabled": self.saved.get("touchMenuEnabled", True) is not False,
+            "thirdPartyMenuEnabled": self.saved.get("thirdPartyMenuEnabled") is True,
+            "petShowing": self.pet_showing,
+            "petVisible": self.pet_visible,
+            "wallpaperShowing": self.wallpaper_showing,
+            "wallpaperActive": self.wallpaper_active,
             "looping": self.looping.copy(),
             "playing": self.playing.copy(),
             "sequence": self.sequence,
-            "voiceLibraryRevision": self.catalog().get("voiceLibraryRevision", 0) if self.current else 0,
             "waitingForCostume": self.costume_due,
-            "menu": self.popup.status.copy() if self.popup else None,
-            "input": self.input_router.status.copy() if self.input_router else None,
         }
+
+    def desktop_state(self, data):
+        state = tuple(data.get(key) is True for key in ("pet", "petVisible", "wallpaper", "wallpaperActive"))
+        if (self.pet_showing, self.pet_visible, self.wallpaper_showing, self.wallpaper_active) != state:
+            self.pet_showing, self.pet_visible, self.wallpaper_showing, self.wallpaper_active = state
+            self.emit("desktop")
+        return self.snapshot()
 
     def emit(self, kind, data=None):
         with self.changed:
@@ -545,154 +293,6 @@ class Studio:
             self.events = self.events[-80:]
             self.changed.notify_all()
 
-    def native(self, group):
-        if self.linked:
-            if self.player.socket is None:
-                self.linked = False
-                self.emit("connection")
-                return False
-            if not self.loading:
-                actual = self.slot_path()
-                expected = self.expected_path()
-                if (actual or self.viewer_owner) and actual != expected:
-                    self.linked = False
-                    self.reconnect_requested = False
-                    self.saved["desktop_requested"] = False
-                    self.save()
-                    self.slot = None
-                    self.player.close()
-                    self.emit("connection")
-                    self.emit("notice", "桌面模型已发生变化，页面预览仍可继续使用")
-                    return False
-            try:
-                self.player.send(13200, {"id": self.slot, "type": 0, "mtn": group})
-                return True
-            except ConnectionError:
-                self.linked = False
-                self.emit("connection")
-                self.emit("notice", "桌面连接已断开，页面预览仍可继续使用")
-        return False
-
-    def expected_path(self):
-        return self.viewer_entry or model_path(self.root() / self.catalog()["entry"])
-
-    def loaded_model(self, slots):
-        paths = {model_path(self.root() / item["file"]): item["id"]
-                 for item in self.catalog()["costumes"]}
-        paths[self.expected_path()] = None
-        for index, slot in enumerate(slots):
-            path = model_path(slot.get("jsonFilePath"))
-            if path in paths:
-                return index, paths[path]
-        return None, None
-
-    def slot_path(self):
-        slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-        if self.slot is None or self.slot >= len(slots):
-            return ""
-        if not slots[self.slot].get("jsonFilePath") and any(
-            slots[self.slot].get(key) for key in ("zipFilePath", "workshopFileId")
-        ):
-            return "@other-model"
-        return model_path(slots[self.slot].get("jsonFilePath"))
-
-    def native_model_file(self, slots=None):
-        if slots is None:
-            slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-        if self.slot is not None and self.slot < len(slots):
-            path = slots[self.slot].get("jsonFilePath")
-            if model_path(path) == self.expected_path():
-                return str(path).replace("\\", "/")
-        return str(self.root() / self.catalog()["entry"]).replace("\\", "/")
-
-    def maintain_connection(self, attach_only=False):
-        """Reattach the same loaded character after a dropped socket."""
-        last_ping = time.monotonic()
-        while True:
-            time.sleep(0.25)
-            with self.lock:
-                if self.pet_linked and not self.linked and not self.reconnect_requested:
-                    continue
-                if not self.reconnect_requested:
-                    slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-                    if self.loaded_model(slots)[0] is None:
-                        continue
-                    self.reconnect_requested = True
-                    self.slot = None
-                try:
-                    if (
-                        self.player.socket
-                        and time.monotonic() - self.player.last_received > 35
-                    ):
-                        self.player.close()
-                    if self.player.socket and self.linked:
-                        if self.slot_path() != self.expected_path():
-                            self.linked = False
-                            self.slot = None
-                            self.input_epoch += 1
-                            self.player.close()
-                            for kind in self.jobs:
-                                self.stop(kind)
-                            self.emit("connection")
-                            continue
-                        if not self.adopt_native_costume():
-                            self.native_menu_events()
-                        if time.monotonic() - last_ping >= 10:
-                            self.player.send(10000, None)
-                            last_ping = time.monotonic()
-                        continue
-                    self.linked = False
-                    if time.monotonic() < self.next_reconnect_at:
-                        continue
-                    self.next_reconnect_at = time.monotonic() + 2
-                    if self.slot is None:
-                        slots = native_data(NATIVE / "save/autosave.dat").get(
-                            "charDatas", []
-                        )
-                        self.slot, _ = self.loaded_model(slots)
-                    actual = self.slot_path()
-                    if attach_only and (not actual or actual != self.expected_path()):
-                        self.slot = None
-                        continue
-                    if actual and actual != self.expected_path():
-                        matched_slot, costume = self.loaded_model(
-                            native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-                        )
-                        if matched_slot == self.slot and costume is not None:
-                            self.settings()["costume"] = costume
-                            self.player.connect()
-                            self.linked = True
-                            self.load_native()
-                            self.emit("connection")
-                            continue
-                        self.reconnect_requested = False
-                        self.saved["desktop_requested"] = False
-                        self.save()
-                        self.slot = None
-                        self.emit("connection")
-                        continue
-                    self.emit("connection")
-                    if not actual:
-                        continue
-                    self.player.connect()
-                    self.linked = True
-                    self.native("carrier_hide_text#5")
-                    self.adopt_native_costume()
-                    variables = self.native_variables()
-                    if not attach_only and (
-                        variables.get("page_menu_version") != 7
-                        or variables.get("page_input_revision") != 2
-                        or variables.get("motion_rig_revision") != self.catalog().get("motionRigRevision", 1)
-                    ):
-                        self.load_native()
-                    self.sync_preferences()
-                    self.sync_favorites()
-                    self.sync_loop_flags()
-                    self.emit("connection")
-                    last_ping = time.monotonic()
-                except (OSError, ConnectionError):
-                    self.linked = False
-                    self.player.close()
 
     def thumbnail_path(self, role_id, costume_id):
         costume = next(
@@ -708,12 +308,14 @@ class Studio:
         stamp = (self.root(role_id) / costume["file"]).stat().st_mtime_ns
         return HERE / ".local/thumbnails" / f"{role_id}-{costume_id}-{stamp}.webp"
 
+
     def page_catalog(self, role_id):
         catalog = copy.deepcopy(self.catalog(role_id))
         for costume in catalog["costumes"]:
             if self.thumbnail_path(role_id, costume["id"]).is_file():
                 costume["thumbnail"] = f'/api/thumbnail/{role_id}/{costume["id"]}'
         return catalog
+
 
     def save_thumbnail(self, role_id, costume_id, image):
         if not isinstance(image, str) or not image.startswith(
@@ -734,6 +336,7 @@ class Studio:
         os.replace(temporary, path)
         return {"saved": True}
 
+
     def stop(self, kind):
         if kind not in self.jobs:
             raise ValueError("操作类型无效")
@@ -746,14 +349,10 @@ class Studio:
         if kind == "costume":
             self.costume_due = False
         self.playing.pop(kind, None)
-        self.native(f"web_set_page_loop_{kind}_0")
-        if kind != "costume":
-            self.native("web_stop_voice" if kind == "voice" else "web_idle")
-        if kind == "voice":
-            self.native("carrier_hide_text#5")
         self.emit("stop", kind)
         if resume:
             self.resume_playback_loops(only_paused=True)
+
 
     def select(self, role_id, costume_id=None, from_loop=False):
         if not isinstance(role_id, str) or role_id not in self.roles:
@@ -772,7 +371,6 @@ class Studio:
         if not from_loop:
             self.costume_due = False
             self.stop("costume")
-        self.input_epoch += 1
         for kind in ("action", "voice"):
             self.jobs[kind] += 1
             timer = self.timers.pop(kind, None)
@@ -780,386 +378,14 @@ class Studio:
                 timer.cancel()
             self.playing.pop(kind, None)
             self.emit("stop", kind)
-        previous = self.current
         self.current = role_id
         if costume_id is not None:
             self.settings()["costume"] = costume_id
-        if self.linked:
-            try:
-                if previous != role_id:
-                    self.load_native()
-                else:
-                    self.native(f'web_costume_{self.settings()["costume"]:03d}')
-                    if self.linked:
-                        self.wait_native()
-                        self.sync_preferences()
-                        self.sync_favorites()
-            except (OSError, ConnectionError):
-                self.linked = False
-                self.player.close()
-                self.emit("notice", "桌面换装仍在恢复连接，页面循环继续运行")
         self.save()
         self.emit("selection")
-        self.sync_loop_flags()
         self.resume_playback_loops()
         return self.snapshot()
 
-    def connect_pet(self):
-        if not self.current:
-            raise ValueError("请先导入角色包")
-        result = desktop_pet.request("attach", port=PORT, role=self.current)
-        if not result.get("connected"):
-            raise ValueError(result.get("error", "桌宠拒绝连接"))
-        self.pet_linked = True
-        if not self.pet_monitor_started:
-            self.pet_monitor_started = True
-            threading.Thread(target=self.maintain_pet, daemon=True).start()
-        self.emit_connections()
-        return self.snapshot()
-
-    def disconnect_pet(self):
-        if not self.pet_linked:
-            return
-        try:
-            desktop_pet.request("detach", port=PORT)
-        except ConnectionError:
-            pass
-        self.pet_linked = False
-        self.emit_connections()
-
-    def maintain_pet(self):
-        while True:
-            time.sleep(2)
-            with self.lock:
-                if not self.pet_linked:
-                    self.pet_monitor_started = False
-                    return
-                try:
-                    self.pet_linked = bool(desktop_pet.request("status", port=PORT).get("connected"))
-                except ConnectionError:
-                    self.pet_linked = False
-                if not self.pet_linked:
-                    self.emit_connections()
-
-    def emit_connections(self):
-        self.emit("connection")
-        if self.viewer_session:
-            self.viewer_session.emit("connection")
-
-    def connect_imported_viewer(self):
-        """Attach to the same integrated entry already loaded in ViewerEX."""
-        if self.plain_preview is not None:
-            raise ValueError("普通 Live2D 模型仅支持预览和独立桌宠")
-        entry = self.catalog()["entry"]
-        expected = (self.root() / entry).read_bytes()
-        slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-        matched_slot = None
-        for index, slot in enumerate(slots):
-            location = slot.get("jsonFilePath")
-            if not location:
-                continue
-            file = Path(location)
-            if file.name.casefold() == entry.casefold() and file.is_file() and file.stat().st_size == len(expected) and file.read_bytes() == expected:
-                matched_slot = index, model_path(location)
-                break
-        if matched_slot is None:
-            raise ValueError(f"请先在 Live2DViewerEX 中加载同一角色包的 {entry}")
-
-        viewer = self.viewer_session
-        if viewer is None:
-            viewer = Studio(standalone=True)
-            viewer.lock = self.lock
-            viewer.changed = threading.Condition(self.lock)
-            viewer.viewer_owner = self
-            viewer.roles, viewer.roots, viewer.catalogs = self.roles, self.roots, self.catalogs
-            viewer.current = self.current
-            viewer.state_path = HERE / ".local/viewerex-state.json"
-            try:
-                stored = read(viewer.state_path)
-            except (OSError, ValueError):
-                stored = {}
-            if isinstance(stored, dict) and isinstance(stored.get("roles"), dict):
-                viewer.saved = stored
-            else:
-                viewer.saved = {"roles": copy.deepcopy(self.saved["roles"])}
-        if viewer.viewer_claim is not None:
-            if viewer.linked and viewer.player.socket and (viewer.slot, viewer.viewer_entry) == matched_slot:
-                return viewer.snapshot()
-            self.disconnect_viewer()
-        viewer.viewer_claim, displaced = claim_role_controller(location)
-        viewer.slot, viewer.viewer_entry = matched_slot
-        self.viewer_session = viewer
-        try:
-            viewer.player.connect()
-        except OSError as error:
-            self.disconnect_viewer(restore_menu=displaced)
-            raise ConnectionError("请启动 Live2DViewerEX 并在它的设置中启用 API，再试一次") from error
-        viewer.linked = True
-        variables = viewer.native_variables()
-        viewer.last_menu_request = variables.get("page_menu_request", 0)
-        viewer.viewer_menu_generation = variables.get("page_load_count", 0)
-        if variables.get("page_input_blocked") == 1:
-            viewer.native("web_allow_input#8")
-        viewer.adopt_native_costume(variables)
-        viewer.sync_preferences()
-        viewer.sync_favorites()
-        viewer.sync_loop_flags()
-        if not viewer.linked:
-            self.disconnect_viewer(restore_menu=displaced)
-            raise ConnectionError("Live2DViewerEX 的角色已发生变化，请重新连接")
-        if sys.platform == "win32":
-            from desktop_input import DesktopInput
-
-            viewer.input_router = DesktopInput(viewer, regions={"voice"})
-        if not viewer.monitor_started:
-            viewer.monitor_started = True
-            threading.Thread(target=viewer.maintain_imported_viewer, daemon=True).start()
-        self.emit_connections()
-        return viewer.snapshot()
-
-    def maintain_imported_viewer(self):
-        last_ping = time.monotonic()
-        while True:
-            time.sleep(0.15)
-            with self.lock:
-                if not self.linked:
-                    if self.viewer_claim is not None:
-                        self.viewer_owner.disconnect_viewer(restore_menu=False)
-                    self.monitor_started = False
-                    return
-                if (not self.player.socket or self.slot_path() != self.expected_path()
-                        or time.monotonic() - self.player.last_received > 35):
-                    self.viewer_owner.disconnect_viewer()
-                    continue
-                variables = self.native_variables()
-                self.refresh_viewer_menu(variables)
-                self.route_viewer_menu(variables)
-                self.adopt_native_costume(variables)
-                if self.input_router:
-                    self.input_router.update(self.desktop_anchor())
-                if time.monotonic() - last_ping >= 10:
-                    try:
-                        self.player.send(10000, None)
-                    except ConnectionError:
-                        self.viewer_owner.disconnect_viewer()
-                    last_ping = time.monotonic()
-
-    def refresh_viewer_menu(self, variables):
-        if variables.get("costume_loading") != 0:
-            return
-        generation = variables.get("page_load_count", 0)
-        if generation == self.viewer_menu_generation:
-            return
-        self.viewer_menu_generation = generation
-        if variables.get("page_backend_connected") != 1:
-            self.native("web_set_page_backend_connected_1")
-
-    def route_viewer_menu(self, variables):
-        request = variables.get("page_menu_request")
-        if type(request) not in (int, float):
-            return
-        previous = self.last_menu_request
-        self.last_menu_request = request
-        if previous is None or request <= previous:
-            return
-        try:
-            desktop_pet.request("viewer-menu", port=PORT)
-        except ConnectionError:
-            pass
-
-    def disconnect_viewer(self, restore_menu=True):
-        viewer = self.viewer_session
-        if viewer is None:
-            return
-        loaded_model = None
-        if restore_menu and viewer.viewer_claim is not None and viewer.slot_path() == viewer.expected_path():
-            loaded_model = viewer.native_model_file()
-        viewer.linked = False
-        if viewer.input_router:
-            viewer.input_router.close()
-            viewer.input_router = None
-        viewer.player.close()
-        viewer.costume_due = False
-        for kind in viewer.jobs:
-            viewer.stop(kind)
-        release_instance(viewer.viewer_claim)
-        viewer.viewer_claim = None
-        self.emit_connections()
-        try:
-            desktop_pet.request("viewer-menu-close", port=PORT)
-        except ConnectionError:
-            pass
-        if loaded_model:
-            try:
-                restore_role_menu(loaded_model, NATIVE)
-            except OSError:
-                self.emit("notice", "无法恢复角色包控制台，请打开该角色的 ControlPanel")
-
-    def connect(self, attach=False):
-        if self.standalone:
-            raise ValueError("此控制台用于网页预览")
-        if self.linked and self.player.socket is not None and self.slot_path() == self.expected_path():
-            return self.snapshot()
-        try:
-            self.player.connect()
-        except OSError:
-            if not self.native_executable.is_file():
-                message = "找不到 Live2DViewerEX。请在 ControlPanel/viewer-path.txt 写入播放器安装目录，然后重启控制台。"
-            else:
-                message = (f"无法连接 Live2DViewerEX 的本机接口（127.0.0.1:{self.player.port}）。"
-                           "请确认角色已显示在播放器中，然后重试。")
-            raise ConnectionError(message) from None
-        attached = False
-        slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-        expected = self.expected_path()
-        if self.slot is not None:
-            actual = (
-                model_path(slots[self.slot].get("jsonFilePath"))
-                if self.slot < len(slots)
-                else ""
-            )
-            if actual != expected:
-                self.slot = None
-        if self.slot is None:
-            slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-            self.slot, loaded_costume = self.loaded_model(slots)
-            if loaded_costume is not None:
-                self.settings()["costume"] = loaded_costume
-            if self.slot is None:
-                if attach:
-                    self.player.close()
-                    raise ValueError("请先在桌面加载这个目录中的角色")
-                self.slot = next(
-                    (
-                        index
-                        for index in range(8)
-                        if index >= len(slots)
-                        or not any(
-                            slots[index].get(key)
-                            for key in ("jsonFilePath", "zipFilePath", "workshopFileId")
-                        )
-                    ),
-                    None,
-                )
-            if self.slot is None:
-                raise ValueError("桌面模型位已满，请先空出一个模型位后重试")
-        if self.slot_path() == expected:
-            variables = self.native_variables()
-            self.adopt_native_costume()
-            attached = (
-                variables.get("page_menu_version") == 7
-                and variables.get("page_input_revision") == 2
-                and variables.get("motion_rig_revision") == self.catalog().get("motionRigRevision", 1)
-            )
-        self.linked = True
-        try:
-            if attached:
-                self.adopt_native_costume()
-                self.wait_native()
-                self.sync_preferences()
-                self.sync_favorites()
-                self.sync_loop_flags()
-                self.native("carrier_hide_text#5")
-            else:
-                self.load_native()
-        except (OSError, ConnectionError):
-            self.linked = False
-            self.player.close()
-            self.emit("connection")
-            raise
-        self.reconnect_requested = True
-        self.saved["desktop_requested"] = True
-        self.save()
-        if not self.monitor_started:
-            self.monitor_started = True
-            threading.Thread(target=self.maintain_connection, daemon=True).start()
-        self.emit("connection")
-        return self.snapshot()
-
-    def load_native(self):
-        self.loading = True
-        try:
-            previous_count = self.native_variables().get("page_load_count", 0)
-            self.player.send(
-                13000,
-                {"id": self.slot, "file": self.native_model_file()},
-            )
-            self.wait_native(any_costume=True, minimum_load_count=previous_count + 1)
-            self.native(f'web_costume_{self.settings()["costume"]:03d}')
-            self.wait_native()
-            self.sync_preferences()
-            self.sync_favorites()
-            self.sync_loop_flags()
-        finally:
-            self.loading = False
-
-    def native_variables(self):
-        path = self.native_model_file()
-        profile = NATIVE / "save/cha" / hashlib.md5(path.encode()).hexdigest()
-        return native_data(profile).get("varFloats") or {}
-
-    def desktop_anchor(self):
-        slots = native_data(NATIVE / "save/autosave.dat").get("charDatas", [])
-        if self.slot is None or self.slot >= len(slots):
-            return None
-        slot = slots[self.slot]
-        if (
-            model_path(slot.get("jsonFilePath"))
-            != self.expected_path()
-        ):
-            return None
-        path = self.native_model_file(slots)
-        profile = native_data(
-            NATIVE / "save/cha" / hashlib.md5(path.encode()).hexdigest()
-        )
-        transform = (profile.get("transforms") or {}).get(slot.get("lastTransKey"))
-        if not transform:
-            return None
-        world_height = 18.0
-        if abs(transform.get("viewportY", 0)) > 0.00001:
-            world_height = abs(transform.get("y", 0) / transform["viewportY"])
-        elif abs(transform.get("viewportX", 0)) > 0.00001:
-            import ctypes
-
-            width = ctypes.windll.user32.GetSystemMetrics(78)
-            height = ctypes.windll.user32.GetSystemMetrics(79)
-            world_height = (
-                abs(transform.get("x", 0) / transform["viewportX"]) * height / width
-            )
-        if not math.isfinite(world_height) or world_height <= 0:
-            return None
-        return {
-            "x": transform.get("viewportX", 0),
-            "y": transform.get("viewportY", 0),
-            "scale": transform.get("scale", 1),
-            "mirror": transform.get("mirror", False),
-            "rotate": transform.get("rotate", 0),
-            "worldHeight": world_height,
-        }
-
-    def adopt_native_costume(self, variables=None):
-        if variables is None:
-            variables = self.native_variables()
-        costume_id = variables.get("selected_costume")
-        if variables.get("costume_loading") != 0 or costume_id not in {
-            item["id"] for item in self.catalog()["costumes"]
-        }:
-            return False
-        if costume_id != self.settings()["costume"]:
-            self.settings()["costume"] = int(costume_id)
-            self.save()
-            self.emit("selection")
-            self.sync_preferences()
-            self.sync_favorites()
-            self.sync_loop_flags()
-            self.resume_playback_loops()
-            return True
-        return False
-
-    def sync_loop_flags(self):
-        self.native("web_set_page_backend_connected_1")
-        for kind in self.jobs:
-            self.native(f"web_set_page_loop_{kind}_{int(self.looping[kind])}")
 
     def resume_playback_loops(self, only_paused=False):
         for kind in ("action", "voice"):
@@ -1175,160 +401,16 @@ class Studio:
                         + "循环",
                     )
 
-    def native_menu_events(self):
-        variables = self.native_variables()
-        panel_request = variables.get("page_panel_request", 0)
-        if self.last_panel_request is not None and panel_request > self.last_panel_request and self.popup:
-            self.popup.messages.put(("panel", None))
-        self.last_panel_request = panel_request
-        request = variables.get("page_menu_request", 0)
-        if request != self.last_menu_request:
-            if (
-                self.last_menu_request is not None
-                and request > self.last_menu_request
-                and self.popup
-            ):
-                self.popup.show()
-            self.last_menu_request = request
-        for kind in self.jobs:
-            counter = variables.get("page_toggle_request_" + kind, 0)
-            previous = self.last_native_toggles.get(kind)
-            self.last_native_toggles[kind] = counter
-            if (
-                previous is None
-                or counter <= previous
-                or int(counter - previous) % 2 == 0
-            ):
-                continue
-            try:
-                if self.looping[kind]:
-                    self.stop(kind)
-                else:
-                    self.operate(kind, loop=True, randomize=True)
-            except (ValueError, ConnectionError) as error:
-                self.stop(kind)
-                self.emit("notice", str(error))
 
-    def wait_native(self, any_costume=False, minimum_load_count=0):
-        for attempt in range(120):
-            variables = self.native_variables()
-            if (
-                variables.get("page_load_count", 0) >= minimum_load_count
-                and variables.get("costume_loading") == 0
-                and (
-                    any_costume
-                    or variables.get("selected_costume") == self.settings()["costume"]
-                )
-            ):
-                return
-            time.sleep(0.05)
-        raise ConnectionError("桌面角色仍在加载，请稍后重新连接")
-
-    def sync_preferences(self):
-        for key, variable in (
-            ("captions", "voice_captions_enabled"),
-            ("bodyOnly", "heart_body_only"),
-            ("actionScope", "heart_action_scope"),
-            ("voiceScope", "heart_voice_scope"),
-        ):
-            self.native(f"web_set_{variable}_{int(self.settings()[key])}")
-
-    def on_native_tap(self, data):
-        if self.input_router and self.input_router.active and not self.viewer_owner:
-            return
-        if self.popup and self.popup.input_blocked:
-            return
-        with self.lock:
-            if self.popup and self.popup.input_blocked:
-                return
-            if not self.linked or data.get("id") != self.slot:
-                return
-            if not str(data.get("modelId") or "").startswith(
-                self.catalog().get("modelId", "not-current-role")
-            ):
-                return
-            name = data.get("hitArea") or ""
-            if not isinstance(name, str):
-                return
-            kinds = []
-            if "语音" in name:
-                if self.viewer_owner:
-                    # If a voice click reached EX, replace its native random choice with our tracked line.
-                    self.operate("voice", randomize=True, body=True)
-                    return
-                kinds = ["voice"]
-            elif "换装" in name:
-                kinds = ["costume"]
-            elif any(word in name for word in ("动作", "左臂", "右臂", "上身")):
-                kinds = ["action"]
-            for kind in kinds:
-                self.jobs[kind] += 1
-                self.looping[kind] = False
-                self.playing.pop(kind, None)
-                self.native(f"web_set_page_loop_{kind}_0")
-                self.emit("stop", kind)
-
-    def sync_favorites(self):
-        available = {item["flag"] for kind in KINDS for item in self.entries(kind)}
-        settings = self.settings()
-        dirty = set(settings.get("dirty", []))
-        for flag in (set(settings["favorites"]) | dirty) & available:
-            self.native(
-                f'web_fav_{flag.removeprefix("heart_fav_")}_{int(flag in settings["favorites"])}'
-            )
-        settings["dirty"] = sorted(dirty - available)
-
-    def entries(self, kind):
-        if kind == "voice":
-            costume = self.costume()["id"]
-            return [voice for voice in self.catalog()["voices"]
-                    if "costumeIds" not in voice or costume in voice["costumeIds"]]
+    def entries(self, kind, costume=None):
         if kind == "costume":
             return self.catalog()["costumes"]
-        return self.costume()["actions" if kind == "action" else "expressions"]
+        costume = costume or self.costume()
+        if kind == "voice":
+            return [voice for voice in self.catalog()["voices"]
+                    if "costumeIds" not in voice or costume["id"] in voice["costumeIds"]]
+        return costume["actions" if kind == "action" else "expressions"]
 
-    def edit_voice(self, role_id, *, audio=None, subtitle=None, filename=None, delete_id=None):
-        if not isinstance(role_id, str):
-            raise ValueError("角色不存在")
-        if audio is None and (not isinstance(delete_id, int) or isinstance(delete_id, bool)):
-            raise ValueError("语音编号无效")
-        catalog = self.catalog(role_id)
-        deleted = next((row for row in catalog["voices"] if row["id"] == delete_id), None)
-        if audio is None and deleted is None:
-            raise ValueError("语音已删除，请刷新列表")
-        if role_id == self.current and self.playing.get("voice", {}).get("id") == delete_id:
-            self.stop("voice")
-        updated, _ = voice_library.edit(
-            self.root(role_id), catalog, audio=audio,
-            subtitle=subtitle, filename=filename, delete_id=delete_id,
-        )
-        self.catalogs[role_id] = updated
-        if deleted:
-            if role_id == self.current:
-                self.native(f"web_fav_{deleted['flag'].removeprefix('heart_fav_')}_0")
-            settings = self.settings(role_id)
-            settings["favorites"] = [flag for flag in settings["favorites"] if flag != deleted["flag"]]
-            settings["dirty"] = [flag for flag in settings.get("dirty", []) if flag != deleted["flag"]]
-            self.cursors.pop(("voice", 0), None)
-            available = [voice for voice in updated["voices"] if not settings["voiceScope"] or voice["flag"] in settings["favorites"]]
-            if role_id == self.current and self.looping["voice"] and not available:
-                self.stop("voice")
-        self.save()
-        self.emit("catalog", {"role": role_id})
-        if role_id == self.current and self.linked:
-            playing = self.playing.copy()
-            try:
-                self.load_native()
-                for kind in ("action", "expression", "voice"):
-                    active = playing.get(kind)
-                    if active and any(row["id"] == active["id"] for row in self.entries(kind)):
-                        self.operate(kind, active["id"], loop=self.looping.get(kind, False))
-            except (ConnectionError, OSError):
-                self.linked = False
-                self.reconnect_requested = True
-                self.player.close()
-                self.emit("notice", "语音已保存，桌面连接恢复后生效")
-        return {"catalog": self.page_catalog(role_id), "state": self.snapshot()}
 
     def favorite(self, flag, enabled):
         catalog = self.catalog()
@@ -1348,25 +430,20 @@ class Studio:
         else:
             favorites.discard(flag)
         self.settings()["favorites"] = sorted(favorites)
-        dirty = set(self.settings().get("dirty", [])) | {flag}
-        available = {item["flag"] for kind in KINDS for item in self.entries(kind)}
-        if self.linked and flag in available:
-            if self.native(f'web_fav_{flag.removeprefix("heart_fav_")}_{int(enabled)}'):
-                dirty.discard(flag)
-        self.settings()["dirty"] = sorted(dirty)
         self.save()
         self.emit("settings")
         return self.snapshot()
 
+
     def preference(self, key, value):
-        variables = {
-            "captions": "voice_captions_enabled",
-            "bodyOnly": "heart_body_only",
-            "actionScope": "heart_action_scope",
-            "voiceScope": "heart_voice_scope",
-            "costumeScope": None,
-            "preventClickThrough": None,
-        }
+        if key in {"touchMenuEnabled", "thirdPartyMenuEnabled"}:
+            if type(value) is not bool:
+                raise ValueError("设置无效")
+            self.saved[key] = value
+            self.save()
+            self.emit("settings")
+            return self.snapshot()
+        switches = {"captions", "bodyOnly", "actionScope", "voiceScope", "costumeScope", "preventClickThrough", "performanceEnabled"}
         orders = {kind + "Order" for kind in self.jobs}
         intervals = {kind + "Interval" for kind in self.jobs}
         if key in orders:
@@ -1381,11 +458,9 @@ class Studio:
                 or not minimum <= value <= 3600
             ):
                 raise ValueError("间隔需在" + str(minimum) + "至3600秒之间")
-        elif key not in variables or value not in (True, False, 0, 1):
+        elif key not in switches or value not in (True, False, 0, 1):
             raise ValueError("设置无效")
         self.settings()[key] = value
-        if variables.get(key):
-            self.native(f"web_set_{variables[key]}_{int(value)}")
         if key in intervals:
             kind = key.removesuffix("Interval")
             if self.looping[kind]:
@@ -1414,6 +489,94 @@ class Studio:
         self.emit("settings")
         return self.snapshot()
 
+
+    def performance_tracks(self, costume, selection):
+        if not isinstance(selection, dict):
+            raise ValueError("演出配置无效")
+        tracks = {}
+        for kind, flag in selection.items():
+            if kind not in ("action", "expression", "voice") or not isinstance(flag, str) or not flag:
+                raise ValueError("演出素材无效")
+            item = next((entry for entry in self.entries(kind, costume) if entry.get("flag") == flag), None)
+            if item is None:
+                raise ValueError("演出素材已变更，请重新选择")
+            tracks[kind] = item
+        return tracks
+
+
+    def outfit_performances(self, outfit):
+        value = self.settings()["performanceGroups"].get(outfit)
+        if isinstance(value, list):
+            return [group for group in value if isinstance(group, dict)
+                    and group.get("id") and group.get("name") and isinstance(group.get("tracks"), dict)]
+        if isinstance(value, dict) and value:
+            return [{"id": "first", "name": "演出 1", "tracks": value}]
+        return []
+
+
+    def save_performance(self, role, outfit, preset_id, group):
+        if role != self.current:
+            raise ValueError("已切换角色，请重新打开演出设置")
+        costume = next((item for item in self.catalog()["costumes"] if item.get("flag") == outfit), None)
+        if not outfit or costume is None:
+            raise ValueError("演出衣装不存在")
+        if not isinstance(preset_id, str) or not 1 <= len(preset_id) <= 64:
+            raise ValueError("演出编号无效")
+        list_for_outfit = self.outfit_performances(outfit)
+        index = next((i for i, item in enumerate(list_for_outfit) if item["id"] == preset_id), len(list_for_outfit))
+        if group is None:
+            if index < len(list_for_outfit):
+                list_for_outfit.pop(index)
+        else:
+            name = group.get("name") if isinstance(group, dict) else None
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
+                raise ValueError("请输入 1 至 60 个字符的演出名称")
+            tracks = self.performance_tracks(costume, group.get("tracks"))
+            if not tracks:
+                raise ValueError("请选择至少一项动作、表情或语音")
+            list_for_outfit[index:index + 1] = [{
+                "id": preset_id, "name": name.strip(),
+                "tracks": {kind: item["flag"] for kind, item in tracks.items()},
+            }]
+        groups = self.settings()["performanceGroups"]
+        if list_for_outfit:
+            groups[outfit] = list_for_outfit
+        else:
+            groups.pop(outfit, None)
+        self.save()
+        self.emit("settings")
+        return self.snapshot()
+
+
+    def touch_performance(self, role, outfit):
+        if role != self.current:
+            return self.snapshot()
+        costume = self.costume()
+        if outfit != costume.get("flag"):
+            return self.snapshot()
+        settings = self.settings()
+        if not settings["performanceEnabled"]:
+            return self.operate("action", randomize=True, body=True, direction="body")
+        groups = self.outfit_performances(outfit)
+        if not groups:
+            return self.snapshot()
+        key = ("performance", role, outfit)
+        last = self.cursors.get(key)
+        index = next((i for i, group in enumerate(groups) if group["id"] == last), -1)
+        group = groups[(index + 1) % len(groups)]
+        self.cursors[key] = group["id"]
+        try:
+            tracks = self.performance_tracks(costume, group["tracks"])
+        except ValueError:
+            return self.snapshot()
+        if tracks:
+            self.reset()
+            for kind, item in tracks.items():
+                self.operate(kind, item["id"], notify=False)
+            self.emit("performance", {"costume": costume["id"], "tracks": tracks})
+        return self.snapshot()
+
+
     def operate(
         self,
         kind,
@@ -1422,11 +585,11 @@ class Studio:
         randomize=False,
         body=False,
         direction=None,
+        notify=True,
     ):
         if kind not in KINDS:
             raise ValueError("操作类型无效")
         if kind == "expression" and item_id == -1:
-            self.native("web_clear_expression")
             self.playing.pop("expression", None)
             self.emit("clear-expression")
             return self.snapshot()
@@ -1489,7 +652,6 @@ class Studio:
                 "name": self.costume()["name"],
                 "startedAt": time.time(),
             }
-            self.native("web_set_page_loop_costume_1")
             self.schedule(
                 kind, self.settings()["costumeInterval"], self.repeat, self.jobs[kind]
             )
@@ -1503,23 +665,12 @@ class Studio:
             generation = 0
         if kind == "costume":
             self.select(self.current, item["id"], from_loop=loop)
-        else:
-            group = (
-                f'web_{kind}_{item["id"]:03d}'
-                if kind == "voice"
-                else f'web_{kind}_{self.costume()["id"]:03d}_{item["id"]:03d}'
-            )
-            if kind == "voice" and item.get("uploaded"):
-                self.native("web_stop_voice")
-            self.native(group)
-        if kind in self.jobs:
-            self.native(f"web_set_page_loop_{kind}_{int(loop)}")
         self.playing[kind] = {
             "id": item["id"],
             "startedAt": time.time(),
             "name": item["name"],
         }
-        if kind != "costume":
+        if notify and kind != "costume":
             self.emit(
                 "play",
                 {
@@ -1538,6 +689,7 @@ class Studio:
             self.schedule(kind, item.get("duration", 4), self.finish, generation)
         return self.snapshot()
 
+
     def schedule(self, kind, delay, callback, generation):
         previous = self.timers.pop(kind, None)
         if previous:
@@ -1547,17 +699,16 @@ class Studio:
         self.timers[kind] = timer
         timer.start()
 
+
     def reset(self):
-        self.input_epoch += 1
         self.costume_due = False
         for kind in self.jobs:
             self.stop(kind)
         self.operate("expression", item_id=-1)
-        self.native("web_reset")
-        self.native("carrier_hide_text#5")
         self.playing.clear()
         self.emit("reset")
         return self.snapshot()
+
 
     def finish(self, kind, generation):
         with self.lock:
@@ -1565,6 +716,7 @@ class Studio:
                 return
             self.playing.pop(kind, None)
             self.emit("ended", kind)
+
 
     def repeat(self, kind, generation):
         with self.lock:
@@ -1622,6 +774,7 @@ class Studio:
                 self.stop(kind)
                 if kind == "costume":
                     self.resume_playback_loops(only_paused=True)
+
 
     def preview(self, role_id, costume_id):
         role = self.catalog(role_id)
@@ -1690,7 +843,7 @@ class Studio:
                     result["FileReferences"][key] = base + refs[key]
         else:
             result = {
-                "version": "Live2DViewerEX",
+                "version": "1.0.0",
                 "model": base + refs["model"],
                 "textures": [base + path for path in textures],
                 "motions": motions,
@@ -1711,20 +864,21 @@ class Studio:
         return result
 
 
+
 STUDIO = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
     def handle(self):
         try:
             super().handle()
         except ConnectionError:
             self.close_connection = True
 
+
     def log_message(self, *args):
         pass
+
 
     def respond(self, status, value, content_type="application/json; charset=utf-8"):
         data = (
@@ -1740,18 +894,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+
     def do_GET(self):
         request = urlsplit(self.path)
         path = unquote(request.path)
         try:
-            studio = STUDIO.viewer_session if request.query == "viewerex=1" else STUDIO
-            if STUDIO.standalone and WEB != HERE / "web" and path.startswith("/vendor/"):
+            if WEB != HERE / "web" and path.startswith("/vendor/"):
                 name = path.removeprefix("/vendor/")
                 if name == "index.min.js" and not (HERE / ".local/runtime/live2d.min.js").is_file():
                     if (HERE / ".local/runtime/live2dcubismcore.min.js").is_file():
                         return self.respond(200, (WEB / "vendor/cubism4.min.js").read_bytes(), "application/javascript")
                     return self.respond(200, b"", "application/javascript")
-                if name in desktop_pet.RUNTIMES:
+                if name in live2d_runtime.RUNTIMES:
                     script = HERE / ".local/runtime" / name
                     if script.is_file():
                         return self.respond(200, script.read_bytes(), "application/javascript")
@@ -1759,11 +913,34 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/library":
                 return self.respond(200, list(STUDIO.roles.values()))
             if path == "/api/state":
-                if studio is None:
-                    raise ValueError("请先连接 Live2DViewerEX")
-                return self.respond(200, studio.snapshot())
+                return self.respond(200, STUDIO.snapshot())
+            if path == "/api/models":
+                with STUDIO.lock:
+                    return self.respond(200, STUDIO.library.list_models(STUDIO.model_record))
+            if path == "/api/scene":
+                return self.respond(200, STUDIO.library.current_scene())
+            if path == "/api/scenes":
+                with STUDIO.lock:
+                    return self.respond(200, [{"id": key, **item} for key, item in reversed(STUDIO.library.presets.items())])
+            if path.startswith("/api/desk-preview/"):
+                _, _, _, kind, item_id = path.split("/")
+                return self.respond(200, STUDIO.library.preview(kind, item_id).read_bytes(), "image/webp")
+            if path.startswith("/api/scene-media/"):
+                file = STUDIO.library.media(path.rsplit("/", 1)[-1])
+                if file is None:
+                    return self.respond(404, {"error": "壁纸素材已失效"})
+                mime = next(kind for kind, extension in MEDIA_TYPES.items() if file.suffix[1:] == extension)
+                with file.open("rb") as stream:
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    while chunk := stream.read(256 * 1024):
+                        self.wfile.write(chunk)
+                return
             if path == "/api/mode":
-                return self.respond(200, {"standalone": STUDIO.standalone})
+                return self.respond(200, {"standalone": True})
             if path.startswith("/api/catalog/"):
                 return self.respond(200, STUDIO.page_catalog(path.rsplit("/", 1)[1]))
             if path.startswith("/api/thumbnail/"):
@@ -1774,16 +951,14 @@ class Handler(BaseHTTPRequestHandler):
                     "image/webp",
                 )
             if path == "/api/events":
-                if studio is None:
-                    raise ValueError("请先连接 Live2DViewerEX")
-                return self.events(studio)
+                return self.events(STUDIO)
             if path.startswith("/api/preview/"):
                 _, _, _, role_id, costume_id = path.split("/")
                 return self.respond(200, STUDIO.preview(role_id, int(costume_id)))
             if path.startswith("/assets/"):
                 _, _, role_id, relative = path.split("/", 3)
                 with STUDIO.lock:
-                    if STUDIO.standalone and STUDIO.plain_preview is None and not role_package.preview_asset(relative):
+                    if STUDIO.plain_preview is None and not role_package.preview_asset(relative):
                         raise ValueError("资源不存在")
                     if STUDIO.folder_assets is not None and relative not in STUDIO.folder_assets:
                         raise ValueError("资源不存在")
@@ -1806,6 +981,7 @@ class Handler(BaseHTTPRequestHandler):
             raise
         except (ValueError, KeyError, StopIteration, OSError) as error:
             self.respond(404, {"error": str(error)})
+
 
     def events(self, studio):
         try:
@@ -1847,6 +1023,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ConnectionError):
             return
 
+
     def do_POST(self):
         request = urlsplit(self.path)
         path = request.path
@@ -1874,7 +1051,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 token = os.environ.get("BANDORILOVE_ROLE_IMPORT_TOKEN", "")
                 supplied = self.headers.get("Authorization", "")
-                if (not STUDIO.standalone or origin is not None or not token
+                if (origin is not None or not token
                         or not secrets.compare_digest(supplied.encode(), f"Bearer {token}".encode())):
                     return self.respond(403, {"error": "请通过桌宠程序选择模型文件"})
                 if not 0 < length <= 131072:
@@ -1886,30 +1063,44 @@ class Handler(BaseHTTPRequestHandler):
                         KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     raise ValueError("无法读取模型文件，或模型包与其配置不匹配") from error
                 return self.respond(200, {"imported": True})
-            if path == "/api/exit" and STUDIO.standalone:
-                with STUDIO.lock:
-                    STUDIO.disconnect_viewer()
+            if path == "/api/exit":
                 self.close_connection = True
                 self.respond(200, {"closed": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
-            if STUDIO.standalone and (not STUDIO.current or path.startswith("/api/voices/")):
-                return self.respond(400, {"error": "请先导入角色包" if not STUDIO.current else "预览模式下仅可播放语音"})
-            if path == "/api/voices/upload":
-                if not 0 < length <= voice_library.MAX_AUDIO_BYTES:
-                    self.close_connection = True
-                    raise ValueError("音频为空或超过 100 MB")
-                metadata = json.loads(unquote(self.headers.get("X-Voice-Metadata", "")))
-                if not isinstance(metadata, dict):
-                    self.close_connection = True
-                    raise ValueError("上传信息无效")
-                audio = self.rfile.read(length)
-                if len(audio) != length:
-                    raise ValueError("音频上传不完整")
+            if path == "/api/desktop-state":
+                token = os.environ.get("BANDORILOVE_ROLE_IMPORT_TOKEN", "")
+                supplied = self.headers.get("Authorization", "")
+                if origin is not None or not token or not secrets.compare_digest(supplied, f"Bearer {token}"):
+                    return self.respond(403, {"error": "请求来源无效"})
+                if not 0 < length <= 1024:
+                    raise ValueError("桌面状态无效")
+                state = json.loads(self.rfile.read(length))
+                if not isinstance(state, dict):
+                    raise ValueError("桌面状态无效")
                 with STUDIO.lock:
-                    result = STUDIO.edit_voice(metadata["role"], audio=audio,
-                                              subtitle=metadata.get("subtitle"), filename=metadata.get("filename"))
-                return self.respond(200, result)
+                    return self.respond(200, STUDIO.desktop_state(state))
+            if path == "/api/scene-media":
+                self.close_connection = True
+                media = STUDIO.library.add_media(self.rfile, length, self.headers.get("Content-Type", ""))
+                return self.respond(200, {"media": media})
+            if path == "/api/model-restore":
+                if length > 1024 or not self.authorized_host(origin):
+                    return self.respond(403, {"error": "请求来源无效"})
+                self.close_connection = True
+                source = STUDIO.library.history.get(STUDIO.saved.get("sourceModel"))
+                if source:
+                    STUDIO.import_selected_model(Path(source["source"]))
+                return self.respond(200, {"restored": bool(source)})
+            if path in {"/api/model-history", "/api/model-preview", "/api/scene", "/api/scene-save", "/api/scene-remove"}:
+                if not 0 < length <= 1_500_000:
+                    raise ValueError("请求过大")
+                data = json.loads(self.rfile.read(length))
+                if not isinstance(data, dict):
+                    raise ValueError("请求格式无效")
+                return self.respond(200, self.update_library(path, data))
+            if not STUDIO.current:
+                return self.respond(400, {"error": "请先导入角色包"})
             if length > (1500000 if path == "/api/thumbnail" else 65536):
                 self.close_connection = True
                 raise ValueError("请求过大")
@@ -1917,27 +1108,25 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError("请求格式无效")
             with STUDIO.lock:
-                studio = STUDIO.viewer_session if request.query == "viewerex=1" else STUDIO
-                if studio is None:
-                    raise ValueError("请先连接 Live2DViewerEX")
-                if studio.plain_preview is not None and path in (
-                    "/api/select", "/api/operate", "/api/preference", "/api/favorite", "/api/stop", "/api/reset"
+                if STUDIO.plain_preview is not None and path in (
+                    "/api/select", "/api/operate", "/api/favorite", "/api/stop", "/api/reset",
+                    "/api/performance/save", "/api/performance/touch",
                 ):
                     raise ValueError("普通 Live2D 模型仅支持预览和独立桌宠")
-                if studio.viewer_owner and (not studio.linked or not studio.player.socket) and path in (
-                    "/api/select", "/api/operate", "/api/preference", "/api/favorite", "/api/stop", "/api/reset"
-                ):
-                    raise ValueError("Live2DViewerEX 已断开，请重新连接")
                 if path == "/api/select":
-                    result = studio.select(data["role"], data.get("costume"))
-                elif path == "/api/voices/delete":
-                    result = STUDIO.edit_voice(data["role"], delete_id=data["id"])
+                    result = STUDIO.select(data["role"], data.get("costume"))
                 elif path == "/api/favorite":
-                    result = studio.favorite(data["flag"], bool(data["enabled"]))
+                    result = STUDIO.favorite(data["flag"], bool(data["enabled"]))
                 elif path == "/api/preference":
-                    result = studio.preference(data["key"], data["value"])
+                    if STUDIO.plain_preview is not None and data["key"] not in {"thirdPartyMenuEnabled", "captions"}:
+                        raise ValueError("此设置仅用于角色发行包")
+                    result = STUDIO.preference(data["key"], data["value"])
+                elif path == "/api/performance/save":
+                    result = STUDIO.save_performance(data["role"], data["costume"], data["preset"], data["group"])
+                elif path == "/api/performance/touch":
+                    result = STUDIO.touch_performance(data["role"], data["costume"])
                 elif path == "/api/operate":
-                    result = studio.operate(
+                    result = STUDIO.operate(
                         data["kind"],
                         data.get("id"),
                         bool(data.get("loop")),
@@ -1946,93 +1135,77 @@ class Handler(BaseHTTPRequestHandler):
                         data.get("direction"),
                     )
                 elif path == "/api/stop":
-                    studio.stop(data["kind"])
-                    result = studio.snapshot()
-                elif path == "/api/connect":
-                    if data.get("provider") == "pet":
-                        STUDIO.connect_pet()
-                        result = studio.snapshot()
-                    elif STUDIO.standalone and data.get("provider") == "viewerex":
-                        result = STUDIO.connect_imported_viewer()
-                    else:
-                        result = STUDIO.connect(bool(data.get("attach")))
-                elif path == "/api/disconnect-viewer":
-                    STUDIO.disconnect_viewer(restore_menu=True)
+                    STUDIO.stop(data["kind"])
                     result = STUDIO.snapshot()
-                elif path == "/api/disconnect-pet":
-                    STUDIO.disconnect_pet()
-                    result = studio.snapshot()
                 elif path == "/api/thumbnail":
                     result = STUDIO.save_thumbnail(
                         data["role"], int(data["costume"]), data["image"]
                     )
-                elif path == "/api/menu":
-                    if STUDIO.popup:
-                        STUDIO.popup.show()
-                    result = STUDIO.snapshot()
                 elif path == "/api/reset":
-                    result = studio.reset()
+                    result = STUDIO.reset()
                 else:
                     return self.respond(404, {"error": "操作不存在"})
             self.respond(200, result)
         except (ValueError, TypeError, KeyError, ConnectionError, OSError) as error:
             self.respond(400, {"error": str(error)})
 
+    def authorized_host(self, origin):
+        token = os.environ.get("BANDORILOVE_ROLE_IMPORT_TOKEN", "")
+        return origin is None and token and secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}")
+
+    def update_library(self, path, data):
+        library = STUDIO.library
+        if path == "/api/model-history" and not data.get("remove"):
+            with STUDIO.lock:
+                record = library.history.get(data.get("id"))
+            if not record or not Path(record["source"]).is_file():
+                raise ValueError("模型文件已移动或删除，请重新导入")
+            STUDIO.import_selected_model(Path(record["source"]))
+            return STUDIO.snapshot()
+        with STUDIO.lock:
+            if path == "/api/model-history":
+                item = data.get("id")
+                library.remove_model(item)
+                if STUDIO.saved.get("sourceModel") == item:
+                    STUDIO.saved.pop("sourceModel")
+                    STUDIO.save()
+                return {"removed": True}
+            if path == "/api/model-preview":
+                item = data.get("id")
+                if item == STUDIO.model_record and item in library.history:
+                    library.save_preview("model", item, data.get("image"))
+                return {"saved": True}
+            if path == "/api/scene":
+                value = library.save_scene(data.get("layers"))
+                STUDIO.emit("scene", value)
+                return value
+            if path == "/api/scene-save":
+                return {"id": library.save_preset(data.get("name"), data.get("layers"), STUDIO.model_record, data.get("image"))}
+            return {"removed": library.remove_scene(data.get("id"))}
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-browser", action="store_true")
-    parser.add_argument("--watch-models", action="store_true")
     parser.add_argument("--panel-dir", type=Path)
-    parser.add_argument("--restore-viewer-menu", type=Path)
     args = parser.parse_args()
-    from model_watch import acquire_instance, enable, run
-
-    if args.watch_models:
-        run(HERE, NATIVE, native_data)
-        raise SystemExit(0)
-    if sys.platform == "win32":
-        controller_instance = acquire_instance("BandGDreamPanel" + instance_id(HERE))
-        if controller_instance is None:
-            for attempt in range(20):
-                existing_port = endpoint_for(HERE)
-                if existing_port:
-                    if not args.no_browser:
-                        webbrowser.open(f"http://127.0.0.1:{existing_port}")
-                    break
-                time.sleep(.1)
-            raise SystemExit(0)
-    standalone = STANDALONE and RESTORE_VIEWER_MENU is None
-    STUDIO = Studio(standalone=True) if standalone else Studio()
-    if not standalone and not STUDIO.roles:
-        raise SystemExit("没有找到资源目录，请将控制台保留在项目目录内。")
-    previous_endpoint = endpoint_record(HERE)
+    if args.panel_dir:
+        HERE = args.panel_dir.resolve()
+        if "BANDORILOVE_WEB_DIR" not in os.environ:
+            WEB = HERE / "web"
+    STUDIO = Studio()
+    endpoint = HERE / ".local/endpoint.json"
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", previous_endpoint["port"] if previous_endpoint else 0), Handler)
-    except OSError as error:
-        if error.errno != 10048 and error.errno != 98 and getattr(error, "winerror", None) != 10048:
-            raise
+        previous = read(endpoint).get("port", 0)
+        previous = previous if type(previous) is int and 1024 <= previous <= 65535 else 0
+    except (OSError, ValueError, AttributeError):
+        previous = 0
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", previous), Handler)
+    except OSError:
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     PORT = server.server_port
-    atomic_write(HERE / ".local/endpoint.json", {"instance": instance_id(HERE), "port": PORT})
-    if not args.no_browser:
-        webbrowser.open(f"http://127.0.0.1:{PORT}")
-    if standalone:
-        with server:
-            server.serve_forever()
-        raise SystemExit(0)
-    from compact_menu import CompactMenu
-
-    STUDIO.popup = CompactMenu(STUDIO, PORT)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    if sys.platform == "win32" and RESTORE_VIEWER_MENU is None:
-        try:
-            enable(HERE)
-        except OSError:
-            STUDIO.popup.messages.put(("error", "自动启动设置失败"))
-    if not STUDIO.monitor_started:
-        STUDIO.monitor_started = True
-        threading.Thread(
-            target=STUDIO.maintain_connection, kwargs={"attach_only": RESTORE_VIEWER_MENU is not None}, daemon=True
-        ).start()
-    STUDIO.popup.run()
+    atomic_write(endpoint, {"port": PORT, "pid": os.getpid(), "startup": os.environ.get("BANDORILOVE_STARTUP", "")})
+    with server:
+        server.serve_forever()

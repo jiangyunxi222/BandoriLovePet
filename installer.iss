@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.3"
+  #define AppVersion "1.0.1"
 #endif
 #ifndef InstallId
   #define InstallId "BandoriLovePet"
@@ -12,6 +12,7 @@
 AppId={#InstallId}
 AppName=BandoriLovePet
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher=BandoriLove
 DefaultDirName={localappdata}\Programs\BandoriLoveDesktopPet
 DisableDirPage=no
@@ -39,6 +40,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"
 Source: "build\player\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Refresh the legacy executable only if an earlier installation used that name.
 Source: "build\player\BandoriLovePet.exe"; DestDir: "{app}"; DestName: "BandoriLoveDesktopPet.exe"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{app}\BandoriLoveDesktopPet.exe'))
+
+[InstallDelete]
+Type: files; Name: "{app}\resources\app\desktop\viewer-menu.html"
+Type: files; Name: "{app}\resources\app\desktop\viewer-menu-preload.cjs"
 
 [Icons]
 Name: "{userprograms}\{#ShortcutName}"; Filename: "{app}\BandoriLovePet.exe"; WorkingDir: "{app}"

@@ -1,23 +1,22 @@
 const { app, BrowserWindow, Tray, ipcMain, screen, dialog, nativeImage } = require("electron");
 const { spawn } = require("node:child_process");
-const { randomBytes, timingSafeEqual } = require("node:crypto");
-const { createServer } = require("node:http");
-const { readFileSync, writeFileSync, mkdirSync, rmSync } = require("node:fs");
+const { randomBytes } = require("node:crypto");
+const { createInterface } = require("node:readline");
+const { readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { setTimeout: delay } = require("node:timers/promises");
 const path = require("node:path");
 
 const home = path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BandoriLoveDesktopPet");
 const bundled = process.env.BANDORILOVE_PET_BUNDLE || path.join(process.resourcesPath, "panel");
 const profile = path.join(home, "profile");
-const descriptor = path.join(home, "connection.json");
 const statusFile = path.join(home, "preferences.json");
-const token = randomBytes(32).toString("hex");
+const startup = randomBytes(16).toString("hex");
 const roleImportToken = randomBytes(32).toString("hex");
 mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
 app.setAppUserModelId("BandoriLove.DesktopPet");
-let manager, pet, petWindowProcess, tray, backend, bridge, ownPort, selectedPort, managerPort;
-let trayMenu, viewerMenu, petScene, petDrag, saveBoundsTimer;
+let manager, pet, petWindowProcess, tray, backend, ownPort, wallpaper, wallpaperProcess;
+let trayMenu, petScene, petDrag, saveBoundsTimer;
 let quitting = false;
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(statusFile, "utf8")); } catch { /* First launch. */ }
@@ -56,23 +55,16 @@ function guardNavigation(win, getPort) {
   win.webContents.on("will-redirect", check);
 }
 
-function showManager(port = selectedPort || ownPort, viewer = false) {
+function showManager() {
   if (!manager || manager.isDestroyed()) {
     manager = new BrowserWindow({
       width: 1050, height: 750, minWidth: 600, minHeight: 440,
       title: "BandoriLovePet", autoHideMenuBar: true,
       icon: path.join(bundled, "ControlPanel.ico"), webPreferences: windowOptions,
     });
-    guardNavigation(manager, () => managerPort);
-    manager.on("close", (event) => {
-      if (!quitting) { event.preventDefault(); manager.hide(); }
-    });
-  }
-  const url = base(port) + (viewer ? "/?viewerex=1" : "/");
-  const current = manager.webContents.getURL();
-  if (managerPort !== port || !current || (viewer && current !== url)) {
-    managerPort = port;
-    manager.loadURL(url).catch(() => {});
+    guardNavigation(manager, () => ownPort);
+    manager.on("closed", () => { manager = null; });
+    manager.loadURL(base(ownPort)).catch(() => {});
   }
   manager.show();
   manager.focus();
@@ -90,9 +82,8 @@ function applyPetLayer() {
   windowCommand(preferences.layer);
 }
 
-function showPet(port) {
-  if (selectedPort === port && pet && !pet.isDestroyed() && pet.webContents.getURL()) return;
-  selectedPort = port;
+function showPet() {
+  if (pet && !pet.isDestroyed()) return;
   if (!pet || pet.isDestroyed()) {
     const primary = screen.getPrimaryDisplay();
     const { workArea: area } = primary;
@@ -113,14 +104,19 @@ function showPet(port) {
       webPreferences: windowOptions,
     });
     pet.on("page-title-updated", (event) => event.preventDefault());
-    guardNavigation(pet, () => selectedPort);
+    guardNavigation(pet, () => ownPort);
     const window = pet;
     const nativeWindow = spawn(path.join(bundled, "PetWindow.exe"), [
       window.getNativeWindowHandle().readBigUInt64LE().toString(), String(process.pid),
-    ], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
+    ], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
     nativeWindow.on("error", (error) => console.error(error));
     nativeWindow.stdin.on("error", (error) => console.error(error));
     petWindowProcess = nativeWindow;
+    createInterface({ input: nativeWindow.stdout }).on("line", (line) => {
+      if (window !== pet || !["visible 0", "visible 1"].includes(line)) return;
+      window.nativeVisible = line.endsWith("1");
+      void publishDesktopState();
+    });
     let inside = false;
     const cursorTimer = setInterval(() => {
       if (!window.isVisible()) return;
@@ -139,21 +135,17 @@ function showPet(port) {
       clearTimeout(petDrag?.timer);
       petScene = petDrag = null;
       nativeWindow.stdin.end();
-      pet = petWindowProcess = selectedPort = null;
+      pet = petWindowProcess = null;
+      void publishDesktopState();
       trayMenu?.close();
     });
   }
   const window = pet;
-  const navigation = (petScene.navigation ?? 0) + 1;
-  petScene.navigation = navigation;
+  petScene.navigation = 1;
   if (window.isVisible()) window.hide();
   window.setIgnoreMouseEvents(true);
-  window.loadURL(base(port) + "/?pet=1").then(() => {
-    // Legacy role panels do not send the first-frame notification.
-    if (window === pet && port !== ownPort && petScene.navigation === navigation) void revealPet();
-  }).catch((error) => {
-    if (window === pet && port === selectedPort && error.code !== "ERR_ABORTED") window.close();
-  });
+  window.loadURL(base(ownPort) + "/?pet=1").catch(() => { if (window === pet) window.close(); });
+  void publishDesktopState();
 }
 
 async function revealPet() {
@@ -175,6 +167,8 @@ async function revealPet() {
   if (window !== pet || navigation !== scene.navigation || window.isDestroyed()) return;
   applyPetLayer();
   window.showInactive();
+  window.nativeVisible = true;
+  void publishDesktopState();
   if (preferences.layer === "bottom") windowCommand("bottom");
 }
 
@@ -294,7 +288,7 @@ function showTrayMenu(bounds) {
   if (trayMenu && !trayMenu.isDestroyed()) { trayMenu.focus(); return; }
   const anchor = bounds?.width && bounds?.height ? bounds : { ...screen.getCursorScreenPoint(), width: 0, height: 0 };
   const { workArea } = screen.getDisplayMatching(anchor);
-  const width = 236, height = 290;
+  const width = 236, height = 328;
   const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, anchor.x + anchor.width - width));
   const preferredY = anchor.y - height - 6 >= workArea.y ? anchor.y - height - 6 : anchor.y + anchor.height + 6;
   const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, preferredY));
@@ -314,40 +308,6 @@ function showTrayMenu(bounds) {
   popup.loadFile(path.join(__dirname, "tray-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
 }
 
-function showViewerMenu() {
-  if (viewerMenu && !viewerMenu.isDestroyed()) { viewerMenu.focus(); return; }
-  const cursor = screen.getCursorScreenPoint();
-  const { workArea } = screen.getDisplayNearestPoint(cursor);
-  const width = 192, height = 206;
-  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, cursor.x + 8));
-  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, cursor.y + 8));
-  const popup = new BrowserWindow({
-    x, y, width, height, show: false, frame: false, resizable: false, skipTaskbar: true,
-    alwaysOnTop: true, transparent: true, backgroundColor: "#00000000",
-    webPreferences: { ...windowOptions, preload: path.join(__dirname, "viewer-menu-preload.cjs") },
-  });
-  viewerMenu = popup;
-  popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  popup.webContents.on("will-navigate", (event) => event.preventDefault());
-  popup.on("blur", () => popup.close());
-  popup.on("closed", () => { viewerMenu = null; });
-  popup.once("ready-to-show", () => { popup.setAlwaysOnTop(true, "pop-up-menu"); popup.show(); });
-  popup.loadFile(path.join(__dirname, "viewer-menu.html")).catch(() => { if (!popup.isDestroyed()) popup.close(); });
-}
-
-async function viewerRequest(route, payload) {
-  const response = await fetch(`${base(ownPort)}/api/${route}?viewerex=1`, {
-    signal: AbortSignal.timeout(2500),
-    ...(payload === undefined ? {} : {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
-      body: JSON.stringify(payload),
-    }),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Live2DViewerEX 操作未完成");
-  return result;
-}
-
 function panelState(port) {
   return fetch(base(port) + "/api/state", { signal: AbortSignal.timeout(1500) }).then((response) => {
     if (!response.ok) throw new Error("控制台尚未就绪");
@@ -355,26 +315,108 @@ function panelState(port) {
   });
 }
 
-async function toggleTrayPet() {
-  const current = pet;
-  const port = current ? selectedPort : ownPort;
-  if (!current && !(await panelState(port)).role) {
-    showManager(port);
-    return;
+function showWallpaper() {
+  if (wallpaper) return wallpaper.ready;
+  const display = screen.getPrimaryDisplay();
+  const win = new BrowserWindow({
+    ...display.bounds, show: false, frame: false, focusable: false, skipTaskbar: true, resizable: false,
+    backgroundColor: "#fbf5f9", opacity: 0, title: "BandoriLovePet 壁纸", webPreferences: windowOptions,
+  });
+  wallpaper = win;
+  guardNavigation(win, () => ownPort);
+  win.on("page-title-updated", (event) => event.preventDefault());
+  win.setIgnoreMouseEvents(true);
+  win.on("closed", () => {
+    if (wallpaper !== win) return;
+    wallpaper = null;
+    wallpaperProcess?.stdin.end();
+    wallpaperProcess = null;
+    void publishDesktopState();
+  });
+  win.webContents.on("render-process-gone", () => {
+    if (wallpaper === win && !quitting) win.webContents.reload();
+  });
+  win.ready = new Promise((resolve, reject) => {
+    win.resolveReady = resolve;
+    win.rejectReady = reject;
+    const timeout = setTimeout(() => reject(new Error("壁纸模型或素材加载超时")), 20000);
+    win.once("closed", () => reject(new Error("壁纸已关闭")));
+    win.loadURL(base(ownPort) + "/?wallpaper=1").catch(reject);
+    win.finishReady = () => clearTimeout(timeout);
+  }).catch((error) => {
+    if (!win.isDestroyed()) win.close();
+    throw error;
+  }).finally(() => win.finishReady());
+  return win.ready;
+}
+
+function attachWallpaper(win) {
+  if (win !== wallpaper || wallpaperProcess) return;
+  const display = screen.getPrimaryDisplay();
+  const { x, y } = screen.dipToScreenPoint(display.bounds);
+  const width = Math.round(display.bounds.width * display.scaleFactor);
+  const height = Math.round(display.bounds.height * display.scaleFactor);
+  win.showInactive();
+  const host = spawn(path.join(bundled, "WallpaperHost.exe"), [
+    win.getNativeWindowHandle().readBigUInt64LE().toString(), process.pid, x, y, width, height,
+  ].map(String), { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
+  wallpaperProcess = host;
+  host.stdin.on("error", () => {});
+  host.on("error", () => win.rejectReady(new Error("无法启动 Windows 壁纸服务")));
+  host.on("close", () => {
+    if (win !== wallpaper) return;
+    win.rejectReady(new Error("无法挂载到 Windows 桌面图标下方"));
+    if (!win.isDestroyed()) win.close();
+  });
+  createInterface({ input: host.stdout }).on("line", (line) => {
+    if (win !== wallpaper || win.isDestroyed()) return;
+    if (line === "ready") {
+      win.attached = true;
+      publishDesktopState().then(() => win.resolveReady(true), win.rejectReady);
+      return;
+    }
+    if (line === "active 1" || line === "active 0") {
+      win.desktopActive = line.endsWith("1");
+      void publishDesktopState();
+      return;
+    }
+    const [action, rawX, rawY] = line.split(" ");
+    if (!["down", "move", "up", "cancel"].includes(action)) return;
+    win.webContents.send("wallpaper:pointer", { action, x: Number(rawX) / width, y: Number(rawY) / height });
+  });
+}
+
+async function toggleWallpaper() {
+  if (wallpaper) {
+    wallpaper.close();
+    return false;
   }
-  const route = current ? "disconnect-pet" : "connect";
-  try {
-    const response = await fetch(`${base(port)}/api/${route}`, {
-      method: "POST", signal: AbortSignal.timeout(3000),
-      headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
-      body: JSON.stringify(current ? {} : { provider: "pet" }),
+  if (!(await panelState(ownPort)).role) throw new Error("请先导入一个模型");
+  return showWallpaper();
+}
+
+async function togglePet() {
+  if (pet) pet.close();
+  else if ((await panelState(ownPort)).role) showPet();
+  else showManager();
+  return Boolean(pet && !pet.isDestroyed());
+}
+
+let desktopUpdates = Promise.resolve();
+function publishDesktopState() {
+  const state = { pet: Boolean(pet), petVisible: Boolean(pet?.nativeVisible),
+    wallpaper: Boolean(wallpaper?.attached), wallpaperActive: Boolean(wallpaper?.desktopActive) };
+  desktopUpdates = desktopUpdates.catch(() => {}).then(async () => {
+    if (quitting) return;
+    const response = await fetch(base(ownPort) + "/api/desktop-state", {
+      method: "POST", signal: AbortSignal.timeout(2000),
+      headers: { "Content-Type": "application/json", "X-Studio-Request": "1", Authorization: `Bearer ${roleImportToken}` },
+      body: JSON.stringify(state),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "桌宠操作未完成");
-  } catch (error) {
-    if (!current) throw error;
-  }
-  if (current && pet === current && !current.isDestroyed()) current.close();
+    if (!response.ok) throw new Error("桌面状态更新失败");
+  });
+  desktopUpdates.catch(console.error);
+  return desktopUpdates;
 }
 
 async function importRole(file) {
@@ -391,82 +433,49 @@ async function importRole(file) {
   if (!response.ok) throw new Error(result.error || "无法导入角色包");
 }
 
-function startBridge() {
-  bridge = createServer(async (incoming, response) => {
-    const send = (data, code = 200) => {
-      response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-      response.end(JSON.stringify(data));
-    };
-    const received = Buffer.from(incoming.headers.authorization || "");
-    const expected = Buffer.from("Bearer " + token);
-    if (incoming.method !== "POST" || incoming.headers.origin ||
-        received.length !== expected.length || !timingSafeEqual(received, expected)) {
-      send({ error: "拒绝连接" }, 403);
-      return;
-    }
-    if (Number(incoming.headers["content-length"]) > 4096) { send({ error: "请求过长" }, 413); return; }
-    try {
-      let body = "";
-      for await (const chunk of incoming) {
-        body += chunk;
-        if (body.length > 4096) { send({ error: "请求过长" }, 413); return; }
-      }
-      const { port, role } = JSON.parse(body);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) { send({ error: "无效端口" }); return; }
-      if (incoming.url === "/attach") {
-        if (!role || (port !== ownPort && (await panelState(ownPort)).role !== role)) {
-          send({ error: "请先在独立桌宠中导入同一个角色" });
-          return;
-        }
-        showPet(port);
-        send({ connected: true });
-      } else if (incoming.url === "/detach") {
-        if (selectedPort === port) pet?.close();
-        send({ connected: false });
-      } else if (incoming.url === "/status") {
-        send({ connected: Boolean(pet && selectedPort === port) });
-      } else if (incoming.url === "/viewer-menu" && port === ownPort) {
-        showViewerMenu();
-        send({ shown: true });
-      } else if (incoming.url === "/viewer-menu-close" && port === ownPort) {
-        viewerMenu?.close();
-        send({ shown: false });
-      } else {
-        send({ error: "未知操作" }, 404);
-      }
-    } catch { send({ error: "桌宠无法读取连接请求" }, 400); }
-  });
-  bridge.listen(0, "127.0.0.1", () => {
-    writeFileSync(descriptor, JSON.stringify({ port: bridge.address().port, token }), "utf8");
-  });
-}
-
 function installHandlers() {
-  ipcMain.handle("viewer-menu:state", (event) => {
-    if (event.sender === viewerMenu?.webContents) return viewerRequest("state");
+  ipcMain.on("manager:fullscreen", (event, active) => {
+    if (event.sender === manager?.webContents && typeof active === "boolean") manager.setFullScreen(active);
   });
-  ipcMain.handle("viewer-menu:action", async (event, action) => {
-    const popup = viewerMenu;
-    if (event.sender !== popup?.webContents) return;
-    if (action === "open" || action === "close") {
-      popup.close();
-      if (action === "open") showManager(ownPort, true);
-      return;
+  ipcMain.handle("pet:placement", (event, layer) => {
+    if (event.sender !== manager?.webContents) return null;
+    if (["top", "bottom", "home"].includes(layer)) {
+      preferences.layer = layer;
+      save();
+      applyPetLayer();
     }
-    if (!["action", "voice", "costume", "reset"].includes(action)) return;
-    try {
-      const state = await viewerRequest("state");
-      if (!state.viewerLinked) throw new Error("Live2DViewerEX 已断开连接");
-      if (action === "reset") await viewerRequest("reset", {});
-      else if (state.looping[action]) await viewerRequest("stop", { kind: action });
-      else await viewerRequest("operate", { kind: action, loop: true, random: true });
-      if (!popup.isDestroyed()) popup.close();
-    } catch (error) {
-      dialog.showErrorBox("Live2DViewerEX", error.message);
+    return preferences.layer;
+  });
+  ipcMain.on("desktop:stop", (event) => {
+    if (event.sender === pet?.webContents) pet.close();
+    if (event.sender === wallpaper?.webContents) wallpaper.close();
+  });
+  ipcMain.handle("pet:toggle", (event) => event.sender === manager?.webContents && togglePet());
+  ipcMain.handle("wallpaper:toggle", (event) => event.sender === manager?.webContents && toggleWallpaper());
+  ipcMain.handle("theme:get", (event) => [manager, pet, wallpaper].some(win => win?.webContents === event.sender)
+    ? preferences.theme : undefined);
+  ipcMain.on("theme:set", (event, theme) => {
+    if (event.sender !== manager?.webContents || typeof theme !== "string" || !/^[a-z]{3,12}$/.test(theme)) return;
+    preferences.theme = theme;
+    save();
+    for (const win of [manager, pet, wallpaper]) {
+      if (win && !win.isDestroyed()) win.webContents.send("theme:changed", theme);
     }
+  });
+  ipcMain.on("wallpaper:first-frame", (event) => {
+    if (event.sender !== wallpaper?.webContents || event.senderFrame?.url !== base(ownPort) + "/?wallpaper=1") return;
+    attachWallpaper(wallpaper);
+  });
+  ipcMain.handle("manager:capture", async (event, rect) => {
+    if (event.sender !== manager?.webContents || !rect ||
+        ![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)) return null;
+    const { width, height } = manager.getContentBounds();
+    if (rect.x < 0 || rect.y < 0 || rect.width < 16 || rect.height < 16 || rect.x + rect.width > width + 1 || rect.y + rect.height > height + 1) return null;
+    const image = await manager.webContents.capturePage(rect);
+    return image.resize({ width: Math.min(420, image.getSize().width) }).toDataURL();
   });
   ipcMain.handle("pet:pick-role", async (event) => {
-    if (event.sender !== manager?.webContents || managerPort !== ownPort) return false;
+    if (event.sender !== manager?.webContents) return false;
     const { canceled, filePaths } = await dialog.showOpenDialog(manager, {
       title: "选择模型",
       properties: ["openFile"],
@@ -474,26 +483,19 @@ function installHandlers() {
         { name: "角色包和模型", extensions: ["zip", "json", "lpk", "wpk"] },
         { name: "BandoriLove 单角色发行 ZIP", extensions: ["zip"] },
         { name: "Live2D 模型 JSON", extensions: ["json"] },
-        { name: "ViewerEX 模型包", extensions: ["lpk", "wpk"] },
+        { name: "Live2D 模型包", extensions: ["lpk", "wpk"] },
       ],
     });
     if (canceled) return false;
     const [file] = filePaths;
     await importRole(file);
-    preferences.package = file;
-    save();
     return true;
   });
-  ipcMain.handle("pet:remember", (event, file) => {
-    if (event.sender !== manager?.webContents || typeof file !== "string" || path.extname(file).toLowerCase() !== ".zip") return;
-    preferences.package = file;
-    save();
-  });
   ipcMain.on("pet:panel", (event) => {
-    if (event.sender === pet?.webContents) showManager();
+    if (event.sender === pet?.webContents || event.sender === wallpaper?.webContents) showManager();
   });
   ipcMain.on("pet:first-frame", (event) => {
-    if (event.sender === pet?.webContents && event.senderFrame?.url === base(selectedPort) + "/?pet=1") void revealPet();
+    if (event.sender === pet?.webContents && event.senderFrame?.url === base(ownPort) + "/?pet=1") void revealPet();
   });
   ipcMain.on("pet:hit", (event, hit) => {
     if (event.sender === pet?.webContents) pet.setIgnoreMouseEvents(hit !== true);
@@ -525,6 +527,7 @@ function installHandlers() {
     if (event.sender !== trayMenu?.webContents) return null;
     return {
       layer: preferences.layer,
+      wallpaper: Boolean(wallpaper?.attached),
       size: petScene ? {
         min: Math.ceil(180 / defaultPetHeight * 100),
         max: Math.floor(maximumPetHeight(petScene.display.workArea) / defaultPetHeight * 100),
@@ -544,12 +547,16 @@ function installHandlers() {
     trayMenu.close();
     switch (action) {
       case "open": showManager(); break;
-      case "import": showManager(ownPort); break;
+      case "import": showManager(); break;
       case "toggle-pet":
-        toggleTrayPet().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
+        togglePet().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
+        break;
+      case "toggle-wallpaper":
+        toggleWallpaper().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
         break;
       case "top":
       case "bottom":
+      case "home":
         preferences.layer = action;
         save();
         applyPetLayer();
@@ -561,12 +568,10 @@ function installHandlers() {
 
 async function start() {
   mkdirSync(profile, { recursive: true });
-  writeFileSync(path.join(profile, "standalone.mode"), "");
   const endpoint = path.join(profile, ".local", "endpoint.json");
-  rmSync(endpoint, { force: true });
   backend = spawn(path.join(bundled, "ControlPanel.exe"), ["--panel-dir", profile, "--no-browser"], {
     windowsHide: true, env: {
-      ...process.env, BANDORILOVE_WEB_DIR: path.join(bundled, "web"), BANDORILOVE_ROLE_IMPORT_TOKEN: roleImportToken,
+      ...process.env, BANDORILOVE_WEB_DIR: path.join(bundled, "web"), BANDORILOVE_ROLE_IMPORT_TOKEN: roleImportToken, BANDORILOVE_STARTUP: startup,
     },
   });
   let failed = false;
@@ -575,7 +580,9 @@ async function start() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     if (failed) throw new Error("无法启动 ControlPanel.exe");
     try {
-      ownPort = JSON.parse(readFileSync(endpoint, "utf8")).port;
+      const connection = JSON.parse(readFileSync(endpoint, "utf8"));
+      if (connection.startup !== startup) throw new Error("Backend is still starting");
+      ownPort = connection.port;
       await panelState(ownPort);
       break;
     } catch {
@@ -593,14 +600,17 @@ async function start() {
   };
   screen.on("display-metrics-changed", updatePetDisplay);
   screen.on("display-removed", updatePetDisplay);
-  startBridge();
   tray = new Tray(nativeImage.createFromPath(path.join(bundled, "ControlPanel.ico")));
   tray.setToolTip("BandoriLovePet");
   tray.on("right-click", (_event, bounds) => showTrayMenu(bounds));
   tray.on("click", () => { trayMenu?.close(); showManager(); });
-  if (preferences.package) {
-    try { await importRole(preferences.package); } catch { /* The original package may have been moved. */ }
-  }
+  try {
+    const response = await fetch(base(ownPort) + "/api/model-restore", {
+      method: "POST", headers: { "X-Studio-Request": "1", Authorization: `Bearer ${roleImportToken}` },
+    });
+    if (response.ok && !(await response.json()).restored && preferences.package) await importRole(preferences.package);
+  } catch { /* Model history remains available when its original file has moved. */ }
+  if (preferences.package) { delete preferences.package; save(); }
   showManager();
 }
 
@@ -612,8 +622,8 @@ else {
     if (quitting) return;
     event.preventDefault();
     quitting = true;
-    bridge?.close();
-    try { rmSync(descriptor, { force: true }); } catch { /* Already gone. */ }
+    wallpaper?.close();
+    pet?.close();
     if (!ownPort) { backend?.kill(); app.quit(); return; }
     fetch(base(ownPort) + "/api/exit", {
       method: "POST", headers: { "X-Studio-Request": "1" }, signal: AbortSignal.timeout(1000),

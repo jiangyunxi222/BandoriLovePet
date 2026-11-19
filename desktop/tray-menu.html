@@ -29,8 +29,10 @@
     <button data-action="open">打开控制台</button>
     <button data-action="import">更换模型</button>
     <button data-action="toggle-pet">显示桌宠</button>
+    <button data-action="toggle-wallpaper">显示壁纸</button>
     <fieldset aria-label="桌宠层级">
       <label class="layer"><input type="radio" name="layer" value="top">浮于最上层</label>
+      <label class="layer"><input type="radio" name="layer" value="home">仅在桌面显示</label>
       <label class="layer"><input type="radio" name="layer" value="bottom">浮于最下层</label>
     </fieldset>
     <div class="size-control">
@@ -50,6 +52,7 @@
     const layers = document.querySelectorAll('input[name="layer"]');
     window.petTray.state().then((state) => {
       if (!state) return;
+      document.querySelector('[data-action="toggle-wallpaper"]').textContent = state.wallpaper ? '退出壁纸' : '显示壁纸';
       for (const layer of layers) layer.checked = layer.value === state.layer;
       if (!state.size) return;
       slider.min = state.size.min;

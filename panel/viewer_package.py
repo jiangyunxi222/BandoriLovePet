@@ -1,4 +1,4 @@
-"""Read the Live2D preview assets declared in a local ViewerEX package."""
+"""Import local ViewerEX models and declarative interaction data."""
 
 import hashlib
 import json
@@ -147,8 +147,12 @@ def model_parts(model):
 
 
 def commands(refs, modern, group):
-    groups = refs.get("Motions" if modern else "motions", {})
-    for event in groups.get(group, []):
+    groups = refs.get("Motions" if modern else "motions")
+    if not isinstance(groups, dict) or not isinstance(groups.get(group), list):
+        return
+    for event in groups[group]:
+        if not isinstance(event, dict):
+            continue
         for key in (("Command", "PostCommand") if modern else ("command", "post_command")):
             text = event.get(key)
             if isinstance(text, str):
@@ -186,66 +190,131 @@ def lpk_preview(source, destination, workshop=None):
         for entry in names:
             model = load(entry)
             parts = model_parts(model)
-            if parts is None:
-                continue
-            modern, refs, _, _ = parts
-            options = model.get("Options" if modern else "options", {})
-            identity = str(options.get("Id" if modern else "id", ""))
-            if "l2d_carrier_" in identity:
-                startup = "Start" if modern else "start"
-                for text in (*commands(refs, modern, startup), *commands(refs, modern, "carrier_switch_001")):
-                    command = START_SUBMODEL.search(text)
-                    if command and command[1] in files:
-                        child = model_parts(load(command[1]))
-                        if child:
-                            parts = child
-                            break
-            picked = parts
-            break
+            if parts is not None:
+                picked = (entry, model, parts)
+                break
         if picked is None:
             raise ValueError("模型包里没有可预览的 Live2D 模型")
-        modern, refs, moc, textures = picked
-        texture_files = refs[textures].copy()
-        for text in commands(refs, modern, "Start" if modern else "start"):
-            for replacement in START_TEXTURE.finditer(text):
-                index = int(replacement[1])
-                if index < len(texture_files) and replacement[2] in files:
-                    texture_files[index] = replacement[2]
         destination.mkdir(parents=True, exist_ok=True)
         total = 0
+        exported = {}
 
-        def asset(name, label, kind):
+        def asset(name, kind):
             nonlocal total
             name = reference(name)
+            key = (name, kind)
+            if key in exported:
+                return exported[key]
             member = files.get(name)
             if member is None:
                 raise ValueError(f"模型包缺少资源：{name}")
-            total += member.file_size
-            if total > MAX_BYTES:
+            if total + member.file_size > MAX_BYTES:
                 raise ValueError("模型包的渲染资源超过 2 GB")
             stream_mask = mask_for(name)
             with archive.open(member) as incoming:
                 first = decode_chunk(incoming.read(CHUNK), stream_mask)
                 suffix = asset_suffix(first, kind)
-                file = destination / (label + suffix)
+                file = destination / (f"resource-{len(exported)}" + suffix)
                 with file.open("xb") as output:
                     output.write(first)
                     while chunk := incoming.read(CHUNK):
                         output.write(decode_chunk(chunk, stream_mask))
+            total += member.file_size
+            exported[key] = file.name
             return file.name
 
-        model = {
-            moc: asset(refs[moc], "model", "moc3" if modern else "moc"),
-            textures: [asset(value, f"texture-{index}", "texture") for index, value in enumerate(texture_files)],
-        }
-        for key in (("Physics", "Pose") if modern else ("physics", "pose")):
-            if refs.get(key):
-                model[key] = asset(refs[key], key.lower(), "json")
+        root, source_model, parts = picked
+        graph = {}
+        pending = {root: (source_model, parts)}
+        while pending and len(graph) < 32:
+            name = next(iter(pending))
+            raw, parts = pending.pop(name)
+            modern, refs, moc, textures = parts
+            options = raw.get("Options" if modern else "options")
+            identity = options.get("Id" if modern else "id", "") if isinstance(options, dict) else ""
+            texture_files = refs[textures].copy()
+            for text in commands(refs, modern, "Start" if modern else "start"):
+                for replacement in START_TEXTURE.finditer(text):
+                    index = int(replacement[1])
+                    if index < len(texture_files) and replacement[2] in files:
+                        texture_files[index] = replacement[2]
+            is_layer = isinstance(identity, str) and identity.endswith(("_hits", "_menu"))
+            model = {moc: asset(refs[moc], "moc3" if modern else "moc")}
+            if not is_layer:
+                model[textures] = [asset(value, "texture") for value in texture_files]
+                for key in (("Physics", "Pose") if modern else ("physics", "pose")):
+                    if refs.get(key):
+                        model[key] = asset(refs[key], "json")
+            graph[name] = {
+                "id": identity, "modern": modern, "model": model,
+                "areas": typed(raw.get("HitAreas" if modern else "hit_areas"), list),
+                "groups": typed(refs.get("Motions" if modern else "motions"), dict),
+                "expressions": typed(refs.get("Expressions" if modern else "expressions"), list),
+                "resources": {},
+            }
+            record = graph[name]
+            # Native response scripts stay inert. Only references used by the declarative player are exported.
+            for group, rows in record["groups"].items():
+                if not isinstance(rows, list):
+                    continue
+                for event in rows[:512]:
+                    if not isinstance(event, dict):
+                        continue
+                    for key, kind in (("File" if modern else "file", "motion3" if modern else "motion"),
+                                      ("Sound" if modern else "sound", "sound")):
+                        export_optional(event.get(key), kind, record, asset)
+                    command = event.get("Command" if modern else "command")
+                    if not isinstance(command, str):
+                        continue
+                    for match in re.finditer(r"(?:^|;)\s*set_exp\s+([^\s;]+)", command):
+                        export_optional(match[1], "expression", record, asset)
+                    for match in START_SUBMODEL.finditer(command):
+                        child = match[1]
+                        if child in files and child not in graph and child not in pending and len(pending) < 32:
+                            child_model = load(child)
+                            child_parts = model_parts(child_model)
+                            if child_parts:
+                                pending[child] = (child_model, child_parts)
+            for expression in record["expressions"]:
+                if isinstance(expression, dict):
+                    export_optional(expression.get("File" if modern else "file"), "expression", record, asset)
+        root_model = graph[root]
+        startup = "Start" if root_model["modern"] else "start"
+        groups = root_model["groups"]
+        visible = root
+        candidates = [startup, *sorted(group for group in groups if group.startswith("carrier_switch_"))]
+        if "l2d_carrier_" in str(root_model["id"]):
+            for group in candidates:
+                visible = next((match[1] for event in groups.get(group, []) if isinstance(event, dict)
+                                for match in START_SUBMODEL.finditer(str(event.get("Command", event.get("command", ""))))
+                                if textures_key(graph.get(match[1]))), root)
+                if visible != root:
+                    break
+        model = graph[visible]["model"]
+        modern = graph[visible]["modern"]
         entry = destination / ("model.model3.json" if modern else "model.model.json")
         preview = {"Version": 3, "FileReferences": model} if modern else model
         entry.write_text(json.dumps(preview), "utf-8")
+        (destination / "viewer.json").write_text(json.dumps({"root": root, "initial": visible, "models": graph}), "utf-8")
         title = (workshop or {}).get("title") or metadata.get("name")
         return entry, title if isinstance(title, str) else None
+
+
+def textures_key(record):
+    return record and record["model"].get("Textures" if record["modern"] else "textures")
+
+
+def typed(value, expected):
+    return value if isinstance(value, expected) else expected()
+
+
+def export_optional(reference, kind, record, asset):
+    if not isinstance(reference, str) or not reference or reference in record["resources"]:
+        return
+    try:
+        record["resources"][reference] = asset(reference, kind)
+    except ValueError:
+        pass
 
 
 def asset_suffix(data, kind):
@@ -255,6 +324,17 @@ def asset_suffix(data, kind):
         return ".moc"
     if kind == "json" and data.lstrip(b"\xef\xbb\xbf \r\n\t").startswith(b"{"):
         return ".json"
+    if kind in {"motion3", "expression"} and data.lstrip(b"\xef\xbb\xbf \r\n\t").startswith(b"{"):
+        return ".motion3.json" if kind == "motion3" else ".exp3.json"
+    if kind == "motion" and data.strip() and b"\0" not in data:
+        return ".mtn"
+    if kind == "sound":
+        if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+            return ".wav"
+        if data.startswith(b"OggS"):
+            return ".ogg"
+        if data.startswith(b"ID3") or len(data) > 1 and data[0] == 255 and data[1] & 224 == 224:
+            return ".mp3"
     if kind == "texture":
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             return ".png"

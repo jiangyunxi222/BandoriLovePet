@@ -17,5 +17,5 @@ https://pyinstaller.org/en/stable/license.html
 
 Character models, motions, textures, voices, and subtitles retain their existing rights and attribution.
 
-Tcl/Tk is bundled for the compact desktop menu.
-https://www.tcl-lang.org/software/tcltk/license.html
+tsParticles Engine and Slim Bundle — MIT license
+https://github.com/tsparticles/tsparticles

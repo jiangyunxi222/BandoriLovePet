@@ -1,9 +1,6 @@
-"""Connection to the optional BandoriLove desktop player."""
+"""Known Live2D runtimes used by the Windows player."""
 
-import json
 import hashlib
-import os
-from pathlib import Path
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
@@ -87,21 +84,3 @@ def require_runtime(folder, *, modern):
     if hashlib.sha256(data).hexdigest() != CORE_DOWNLOAD_SHA256:
         raise ValueError("Live2D 官方运行库版本已变化。可以先导入一个完整的 BandoriLove 发行包。")
     save_runtime(folder, CUBISM_CORE, data)
-
-
-def request(operation, **payload):
-    descriptor = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "BandoriLoveDesktopPet" / "connection.json"
-    try:
-        endpoint = json.loads(descriptor.read_bytes())
-        port, token = endpoint["port"], endpoint["token"]
-        if type(port) is not int or not 0 < port < 65536 or len(token) != 64:
-            raise ValueError("Invalid desktop player endpoint")
-        message = Request(
-            f"http://127.0.0.1:{port}/{operation}",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        )
-        with urlopen(message, timeout=2) as response:
-            return json.load(response)
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise ConnectionError("请先启动独立桌宠并导入当前角色") from error

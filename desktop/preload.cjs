@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopPet", {
   showPanel: () => ipcRenderer.send("pet:panel"),
@@ -14,5 +14,15 @@ contextBridge.exposeInMainWorld("desktopPet", {
   drag: (operation, x, y) => ipcRenderer.send("pet:drag", operation, x, y),
   zoom: (direction) => ipcRenderer.send("pet:zoom", direction),
   pickRole: () => ipcRenderer.invoke("pet:pick-role"),
-  rememberPackage: (file) => ipcRenderer.invoke("pet:remember", webUtils.getPathForFile(file)),
+  togglePet: () => ipcRenderer.invoke("pet:toggle"),
+  toggleWallpaper: () => ipcRenderer.invoke("wallpaper:toggle"),
+  wallpaperFirstFrame: () => ipcRenderer.send("wallpaper:first-frame"),
+  watchWallpaperPointer: (callback) => ipcRenderer.on("wallpaper:pointer", (_event, pointer) => callback(pointer)),
+  captureScene: (rect) => ipcRenderer.invoke("manager:capture", rect),
+  fullscreen: (active) => ipcRenderer.send("manager:fullscreen", active),
+  placement: (layer) => ipcRenderer.invoke("pet:placement", layer),
+  stopDisplay: () => ipcRenderer.send("desktop:stop"),
+  theme: () => ipcRenderer.invoke("theme:get"),
+  setTheme: (theme) => ipcRenderer.send("theme:set", theme),
+  watchTheme: (callback) => ipcRenderer.on("theme:changed", (_event, theme) => callback(theme)),
 });

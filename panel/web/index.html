@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <script>
-    if (window.desktopPet && new URLSearchParams(location.search).get("pet") === "1") {
+    const mode = new URLSearchParams(location.search);
+    if (mode.get("wallpaper") === "1") document.documentElement.setAttribute("data-wallpaper", "");
+    if (window.desktopPet && mode.get("pet") === "1") {
       document.documentElement.dataset.desktopPet = "";
     }
   </script>
@@ -13,12 +15,17 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/rounded.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/sans-regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=desktop-pet-5">
+  <link rel="stylesheet" href="style.css?v=desktop-scene-1">
   <script defer src="vendor/live2dcubismcore.min.js"></script>
   <script defer src="vendor/live2d.min.js"></script>
   <script defer src="vendor/pixi.min.js"></script>
   <script defer src="vendor/index.min.js"></script>
-  <script defer src="app.js?v=desktop-pet-15"></script>
+  <script defer src="performance.js?v=3"></script>
+  <script defer src="theme.js"></script>
+  <script defer src="viewer-interaction.js"></script>
+  <script defer src="app.js?v=desktop-scene-1"></script>
+  <script defer src="scene.js"></script>
+  <script defer src="library.js"></script>
 </head>
 <body>
   <main class="workspace">
@@ -29,15 +36,19 @@
       <input id="role-zip" type="file" accept=".zip,application/zip" hidden>
       <div class="desktop-controls">
         <button id="import-role" class="connection" hidden>更换模型</button>
-        <button id="pet-visibility" class="connection" aria-pressed="false" hidden>显示桌宠</button>
-        <button id="connect" class="connection" aria-pressed="false" hidden><span class="status-dot" aria-hidden="true"></span>Live2DViewerEX</button>
+        <button id="performance-toggle" class="connection" aria-pressed="false" hidden>演出</button>
+        <button id="pet-visibility" class="connection" aria-pressed="false" hidden>桌宠</button>
+        <button id="apply-wallpaper" class="connection" aria-pressed="false" hidden>壁纸</button>
+        <button id="immersive-preview" class="connection" hidden>纯享</button>
+        <button id="open-settings" class="connection" aria-haspopup="dialog" hidden>设置</button>
       </div>
     </header>
     <section id="role-welcome" class="role-welcome" hidden><h1>导入角色包</h1><p id="import-formats">选择 Garupa 或 OurNotes 的单角色 ZIP。</p><button id="import-first-role" class="primary-button">选择 ZIP</button></section>
     <p id="role-import-status" class="role-import-status" role="status" hidden></p>
     <div class="content">
       <div class="studio-layout">
-        <section class="stage" aria-label="Live2D 角色预览">
+        <section class="stage" id="stage" aria-label="Live2D 角色预览">
+          <div id="scene-layers" aria-hidden="true"></div>
           <div class="stage-orbit orbit-one"></div><div class="stage-orbit orbit-two"></div><span class="stage-spark spark-one">✧</span><span class="stage-spark spark-two">✦</span>
           <span class="stage-label" id="model-loading" role="status">加载中</span>
           <div id="canvas-host"></div>
@@ -57,30 +68,132 @@
           <div class="playback-bar" id="playback-bar"><div class="loop-options">
             <div class="order-setting"><span>播放顺序</span><div class="order-buttons" id="loop-order" role="group" aria-label="播放顺序"><button data-order="random" aria-pressed="true" class="selected">随机播放</button><button data-order="sequence" aria-pressed="false">按列表顺序</button></div></div>
             <label><span id="interval-label">结束后等待</span><span class="interval-input"><input id="loop-interval" type="number" min="0" max="3600" step="0.5" value="12" aria-label="循环间隔秒数"><span>秒</span></span></label>
-            <button id="upload-voice" class="voice-upload-button" aria-label="上传语音" hidden><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M11 20V8l9-2v11"/><ellipse cx="7.5" cy="20.5" rx="3.5" ry="2.5"/><ellipse cx="16.5" cy="17.5" rx="3.5" ry="2.5"/><path class="note-plus" d="M23 2v6m-3-3h6"/></svg></button>
+
           </div><div class="play-buttons"><button id="loop" class="primary-button"><span>↻</span><span id="loop-label">循环播放</span></button></div></div>
         </section>
       </div>
-      <footer class="bottom-bar"><div class="now-playing"><span class="equalizer" id="equalizer"><i></i><i></i><i></i><i></i></span><div><strong id="playing-title">待机</strong><span id="playing-detail"></span></div></div><div class="quick-settings"><label class="setting-switch"><input id="captions-toggle" type="checkbox" checked><span class="switch-track"></span><span>语音字幕</span></label><label class="setting-switch"><input id="click-through-toggle" type="checkbox" checked><span class="switch-track"></span><span>防穿透</span></label><label class="setting-switch"><input id="body-toggle" type="checkbox"><span class="switch-track"></span><span>互动仅♥</span></label><button id="stop-all" class="stop-button"><span>↺</span>恢复待机</button></div></footer>
+      <footer class="bottom-bar"><div class="now-playing"><span class="equalizer" id="equalizer"><i></i><i></i><i></i><i></i></span><div><strong id="playing-title">待机</strong><span id="playing-detail"></span></div></div><div class="quick-settings"><button id="stop-all" class="stop-button"><span>↺</span>恢复待机</button></div></footer>
     </div>
   </main>
-  <dialog id="voice-upload-dialog" class="voice-dialog" aria-labelledby="voice-upload-title">
-    <form id="voice-upload-form">
-      <div class="dialog-heading"><h2 id="voice-upload-title">上传语音</h2><button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button></div>
-      <label>音频<input id="voice-file" type="file" accept="audio/*,.flac,.m4a" required></label>
-      <label>字幕<textarea id="voice-caption" rows="4" maxlength="2000" required></textarea></label>
-      <p id="voice-upload-error" class="dialog-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button type="button" class="subtle-button" data-close-dialog>取消</button><button id="voice-upload-submit" type="submit" class="primary-button">上传</button></div>
+  <dialog id="performance-settings" class="voice-dialog" aria-labelledby="performance-title">
+    <form>
+      <div class="dialog-heading"><h2 id="performance-title">演出设置</h2><button type="button" class="dialog-close" data-close-performance aria-label="关闭演出设置">×</button></div>
+      <fieldset class="performance-fields">
+        <label class="setting-switch">
+          <input name="enabled" type="checkbox" role="switch">
+          <span class="switch-track" aria-hidden="true"></span><span>演出模式</span>
+        </label>
+        <p class="performance-hint">点上身依次播放当前衣装的演出</p>
+        <div class="performance-field"><label for="performance-costume">衣装</label><select name="costume" hidden></select><button id="performance-costume" type="button" class="performance-choice" data-performance-choose="costume" data-label="衣装" aria-haspopup="dialog" aria-controls="performance-options"><span></span></button></div>
+        <div class="performance-field">
+          <label for="performance-preset">演出组</label><select name="preset" hidden></select>
+          <div class="performance-picker"><button id="performance-preset" type="button" class="performance-choice" data-performance-choose="preset" data-label="演出组" aria-haspopup="dialog" aria-controls="performance-options"><span></span></button><button type="button" class="performance-add" data-add-performance aria-label="新增演出" title="新增演出">+</button></div>
+        </div>
+        <label class="performance-field">演出名称<input type="text" name="presetName" maxlength="60" required></label>
+        <div class="performance-field"><label for="performance-action">动作</label><select name="action" hidden></select><button id="performance-action" type="button" class="performance-choice" data-performance-choose="action" data-label="动作" aria-haspopup="dialog" aria-controls="performance-options"><span></span></button></div>
+        <div class="performance-field"><label for="performance-expression">表情</label><select name="expression" hidden></select><button id="performance-expression" type="button" class="performance-choice" data-performance-choose="expression" data-label="表情" aria-haspopup="dialog" aria-controls="performance-options"><span></span></button></div>
+        <div class="performance-field"><label for="performance-voice">语音</label><select name="voice" hidden></select><button id="performance-voice" type="button" class="performance-choice" data-performance-choose="voice" data-label="语音" aria-haspopup="dialog" aria-controls="performance-options"><span></span></button></div>
+        <p role="status" class="performance-status"></p>
+        <div class="dialog-actions">
+          <button type="button" class="subtle-button" data-clear-performance>删除这组</button>
+          <button type="submit" class="primary-button">保存演出</button>
+        </div>
+      </fieldset>
+    </form>
+    <p class="performance-toast" data-performance-toast role="status" hidden></p>
+  </dialog>
+  <dialog id="performance-options" class="voice-dialog" aria-labelledby="performance-options-title">
+    <div class="dialog-heading">
+      <h2 id="performance-options-title"></h2>
+      <button type="button" class="dialog-close" data-close-options aria-label="关闭选择" autofocus>×</button>
+    </div>
+    <div class="performance-option-body">
+      <input type="search" data-option-search placeholder="搜索选项" aria-label="搜索选项" hidden>
+      <ul class="performance-option-list" aria-labelledby="performance-options-title"></ul>
+      <p class="performance-status" data-option-empty role="status" hidden>没有匹配的选项</p>
+    </div>
+  </dialog>
+  <dialog id="settings" class="voice-dialog" aria-labelledby="settings-title">
+    <div class="dialog-heading"><h2 id="settings-title">设置</h2><button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
+    <div class="desktop-settings">
+      <button id="edit-scene" class="scene-entry"><span>壁纸设置</span><small>背景 · 角色 · 特效</small><span aria-hidden="true">›</span></button>
+      <button id="open-performance" class="scene-entry" type="button" aria-haspopup="dialog" hidden><span>演出设置</span><small>衣装 · 动作 · 表情 · 语音</small><span aria-hidden="true">›</span></button>
+      <button id="open-theme" class="scene-entry" type="button" aria-haspopup="dialog" aria-controls="theme-settings"><span>主题配色</span><small id="theme-current"></small><span aria-hidden="true">›</span></button>
+      <label class="setting-switch"><input id="captions-toggle" type="checkbox" checked><span class="switch-track"></span><span>显示字幕</span></label>
+      <label class="setting-switch"><input id="body-toggle" type="checkbox"><span class="switch-track"></span><span>互动收藏</span></label>
+      <label class="setting-switch"><input id="touch-menu" type="checkbox" role="switch" checked><span class="switch-track"></span><span>触控菜单</span></label>
+      <label class="setting-switch"><input id="click-through-toggle" type="checkbox" checked><span class="switch-track"></span><span>桌宠透明区域允许点击穿过</span></label>
+      <label class="pet-placement">桌宠位置 <select id="pet-placement"><option value="top">浮于应用上层</option><option value="home">仅在桌面显示</option><option value="bottom">浮于最下层</option></select></label>
+    </div>
+  </dialog>
+  <dialog id="app-library" class="voice-dialog" aria-labelledby="app-library-title">
+    <div class="dialog-heading"><h2 id="app-library-title">更换模型</h2><button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
+    <div class="library-body"><p id="app-library-message" role="status" hidden></p><ul id="app-library-items"></ul><button id="app-library-add" class="primary-button">导入新模型</button></div>
+  </dialog>
+  <dialog id="scene-name" class="voice-dialog" aria-labelledby="scene-name-title">
+    <form id="scene-name-form"><div class="dialog-heading"><h2 id="scene-name-title">保存壁纸配置</h2><button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <label>名称<input name="name" maxlength="80" required autofocus></label><div class="dialog-actions"><button type="submit" class="primary-button">保存</button></div>
     </form>
   </dialog>
-  <dialog id="voice-delete-dialog" class="voice-dialog" aria-labelledby="voice-delete-title">
-    <form id="voice-delete-form">
-      <div class="dialog-heading"><h2 id="voice-delete-title">删除语音及字幕？</h2><button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button></div>
-      <p id="voice-delete-caption" class="delete-caption"></p>
-      <p id="voice-delete-error" class="dialog-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button type="button" class="subtle-button" data-close-dialog>取消</button><button id="voice-delete-submit" type="submit" class="primary-button">删除</button></div>
-    </form>
-  </dialog>
+  <section id="scene-editor" aria-label="壁纸图层编辑" hidden>
+    <header class="scene-toolbar">
+      <button id="scene-back">‹ 返回</button>
+      <h2>壁纸设置</h2>
+      <button id="scene-preview" aria-pressed="false">预览</button>
+    </header>
+    <div class="scene-sheet">
+      <div class="scene-scroll">
+      <details id="scene-material-section" class="scene-section">
+      <summary>素材特效</summary>
+      <div class="scene-add">
+        <button id="scene-add-image">添加图片</button>
+        <button id="scene-add-video">添加视频</button>
+        <button id="scene-add-effect">＋ 特效</button>
+      </div>
+      <div id="scene-choices" hidden><p id="scene-choices-title"></p><div id="scene-choice-grid"></div></div>
+      <input id="scene-image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="scene-video-file" type="file" accept="video/mp4" hidden>
+      </details>
+      <details id="scene-stack-section" class="scene-section" open>
+      <summary>图层排序</summary>
+      <p class="scene-gesture-hint">选中图层后，拖动图层 · 滚轮缩放</p>
+      <ol id="scene-stack"></ol>
+      </details>
+      <details id="scene-adjust-section" class="scene-section">
+      <summary>图层调整</summary>
+      <fieldset id="scene-adjust">
+        <legend id="scene-selected">角色</legend>
+        <p id="scene-base-note" hidden>原来的角色背景固定保留在底层。添加图片或视频即可覆盖，删除后自动恢复。</p>
+        <label id="scene-opacity-row">透明度<input id="scene-opacity" type="range" min="0" max="100"><output id="scene-opacity-value"></output></label>
+        <label id="scene-scale-row">大小<input id="scene-scale" type="range" min="30" max="300"><output id="scene-scale-value"></output></label>
+        <div class="scene-position">
+          <label>左右<input id="scene-x" type="range" min="-80" max="80"></label>
+          <label>上下<input id="scene-y" type="range" min="-80" max="80"></label>
+        </div>
+      </fieldset>
+      </details>
+      <details class="scene-section" id="scene-library-section">
+        <summary>壁纸配置</summary>
+        <div class="scene-add">
+          <button id="scene-save-preset">保存当前配置</button>
+          <button id="scene-open-presets">已保存的壁纸</button>
+        </div>
+      </details>
+      <p id="scene-message" role="status" hidden></p>
+      </div>
+      <button id="scene-apply" class="primary-button">完成并预览</button>
+    </div>
+  </section>
+  <button id="pet-menu-button" aria-label="桌宠菜单" hidden>⋯</button>
+  <div id="pet-menu" aria-label="角色菜单" hidden>
+    <button data-menu="panel">打开面板</button>
+    <button data-menu="action">循环动作</button><button data-menu="voice">循环语音</button><button data-menu="costume">循环换装</button>
+    <button data-menu="reset">恢复待机</button><button data-menu="stop">退出桌宠</button><button data-menu="close">关闭菜单</button>
+  </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="theme-settings" class="voice-dialog" aria-labelledby="theme-title">
+    <div class="dialog-heading theme-heading"><h2 id="theme-title">主题配色</h2><button id="theme-close" class="dialog-close" type="button" aria-label="关闭主题配色" autofocus>×</button></div>
+    <div id="theme-grid"></div>
+  </dialog>
 </body>
 </html>

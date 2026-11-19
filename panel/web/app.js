@@ -7,7 +7,7 @@ const view = {
   catalog: null, state: null, tab: "action", importRevision: 0,
   onlyFavorites: false, favoriteCategory: "all", request: 0, model: null,
   petWindow: document.documentElement.hasAttribute("data-desktop-pet"), modelSize: null,
-  viewerMode: Boolean(window.desktopPet) && new URLSearchParams(location.search).get("viewerex") === "1",
+  wallpaper: document.documentElement.hasAttribute("data-wallpaper"),
   app: null, mouthIds: [], mouth: 0, thumbnails: new Map(), visibleVoice: null,
   currentAction: null, currentExpression: null, modelKey: null, volume: null,
   switchingCostume: false, desiredCostume: null, modelReady: Promise.resolve(),
@@ -55,8 +55,8 @@ function toast(message) {
   toastTimer = setTimeout(() => $("#toast").classList.remove("visible"), 3300);
 }
 
-async function api(path, data, viewer = view.viewerMode) {
-  const response = await fetch(`/api/${path}${viewer ? "?viewerex=1" : ""}`, data === undefined ? {} : {
+async function api(path, data) {
+  const response = await fetch(`/api/${path}`, data === undefined ? {} : {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Studio-Request": "1" },
     body: JSON.stringify(data),
@@ -130,105 +130,6 @@ function itemList(kind) {
 function asset(path) {
   return `/assets/${view.catalog.id}/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
-
-function receiveVoiceCatalog(result) {
-  if (view.catalog.id !== result.catalog.id) return;
-  if ((result.catalog.voiceLibraryRevision || 0) < (view.catalog.voiceLibraryRevision || 0)) return;
-  view.catalog = result.catalog;
-  if (result.state.sequence >= view.state.sequence) view.state = result.state;
-  if (view.visibleVoice && !view.catalog.voices.some(item => item.id === view.visibleVoice.id)) stopLocal("voice");
-  view.itemsSignature = "";
-  renderState();
-}
-
-async function prepareVoiceAudio(file) {
-  if (file.size > 100 * 1024 * 1024) throw new Error("音频超过 100 MB");
-  await enableAudio();
-  const decoded = await audioContext.decodeAudioData(await file.arrayBuffer());
-  const rate = 44100;
-  const frames = Math.ceil(decoded.duration * rate);
-  if (!frames || frames * 2 + 44 > 100 * 1024 * 1024) throw new Error("音频为空或超过 100 MB");
-  const offline = new OfflineAudioContext(1, frames, rate);
-  const source = offline.createBufferSource();
-  source.buffer = decoded;
-  source.connect(offline.destination);
-  source.start();
-  const samples = (await offline.startRendering()).getChannelData(0);
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const data = new DataView(buffer);
-  const text = (offset, value) => [...value].forEach((character, index) => data.setUint8(offset + index, character.charCodeAt(0)));
-  text(0, "RIFF"); data.setUint32(4, buffer.byteLength - 8, true); text(8, "WAVE");
-  text(12, "fmt "); data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, 1, true);
-  data.setUint32(24, rate, true); data.setUint32(28, rate * 2, true); data.setUint16(32, 2, true); data.setUint16(34, 16, true);
-  text(36, "data"); data.setUint32(40, samples.length * 2, true);
-  samples.forEach((sample, index) => {
-    const value = Math.max(-1, Math.min(1, sample));
-    data.setInt16(44 + index * 2, value * (value < 0 ? 32768 : 32767), true);
-  });
-  return buffer;
-}
-
-async function uploadVoice(event) {
-  event.preventDefault();
-  const dialog = $("#voice-upload-dialog");
-  const submit = $("#voice-upload-submit");
-  const error = $("#voice-upload-error");
-  const file = $("#voice-file").files[0];
-  if (!file) return;
-  const role = dialog.dataset.role;
-  const subtitle = $("#voice-caption").value.trim();
-  if (!subtitle) { error.textContent = "请输入字幕"; error.hidden = false; return; }
-  error.hidden = true;
-  submit.disabled = true;
-  submit.textContent = "上传中";
-  dialog.dataset.busy = "true";
-  try {
-    const audio = await prepareVoiceAudio(file);
-    const response = await fetch("/api/voices/upload", {method: "POST", body: audio, headers: {
-      "Content-Type": "audio/wav", "X-Studio-Request": "1",
-      "X-Voice-Metadata": encodeURIComponent(JSON.stringify({role, subtitle, filename: file.name})),
-    }});
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "上传失败");
-    receiveVoiceCatalog(result);
-    dialog.close();
-    $("#voice-upload-form").reset();
-  } catch (failure) {
-    error.textContent = failure.name === "EncodingError" ? "无法读取音频，请选择其他文件" : failure.message;
-    error.hidden = false;
-  } finally {
-    submit.disabled = false;
-    submit.textContent = "上传";
-    delete dialog.dataset.busy;
-  }
-}
-
-function requestVoiceDeletion(item) {
-  const dialog = $("#voice-delete-dialog");
-  dialog.dataset.role = view.catalog.id;
-  dialog.dataset.voice = String(item.id);
-  $("#voice-delete-caption").textContent = item.caption || item.name;
-  $("#voice-delete-error").hidden = true;
-  dialog.showModal();
-}
-
-async function deleteVoice(event) {
-  event.preventDefault();
-  const dialog = $("#voice-delete-dialog");
-  const submit = $("#voice-delete-submit");
-  const error = $("#voice-delete-error");
-  submit.disabled = true;
-  dialog.dataset.busy = "true";
-  error.hidden = true;
-  try {
-    receiveVoiceCatalog(await api("voices/delete", {role: dialog.dataset.role, id: Number(dialog.dataset.voice)}));
-    dialog.close();
-  } catch (failure) {
-    error.textContent = failure.message;
-    error.hidden = false;
-  } finally { submit.disabled = false; delete dialog.dataset.busy; }
-}
-
 
 function makeItem(item, kind, favorites) {
   const card = document.createElement("article");
@@ -319,15 +220,7 @@ function makeItem(item, kind, favorites) {
     card.append(type);
   }
   card.append(main, heart);
-  if (kind === "voice") {
-    const remove = document.createElement("button");
-    remove.className = "voice-delete";
-    remove.title = "删除语音及字幕";
-    remove.setAttribute("aria-label", remove.title);
-    remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg>';
-    remove.addEventListener("click", () => requestVoiceDeletion(item));
-    card.append(remove);
-  }
+
   return card;
 }
 
@@ -398,7 +291,6 @@ function renderItems() {
   $("#favorites-filter").hidden = view.tab === "favorites";
   $("#favorite-categories").hidden = view.tab !== "favorites";
   $("#clear-expression").hidden = view.tab !== "expression";
-  $("#upload-voice").hidden = view.tab !== "voice";
   $("#favorites-filter").classList.toggle("selected", view.onlyFavorites);
   $("#favorites-filter").setAttribute("aria-pressed", String(view.onlyFavorites));
   $("#favorites-filter span").textContent = view.onlyFavorites ? "♥" : "♡";
@@ -425,21 +317,24 @@ function renderState() {
   if (!view.state || !view.catalog) return;
   const renderOnly = view.catalog.renderOnly === true;
   document.documentElement.toggleAttribute("data-render-only", renderOnly);
-  const visibility = $("#pet-visibility");
-  visibility.textContent = view.state.petLinked ? "退出桌宠" : "显示桌宠";
-  visibility.setAttribute("aria-pressed", String(view.state.petLinked));
-  document.title = view.catalog.name.replace(/（Garupa）/g, "") + (window.desktopPet ? " · BandoriLovePet" : " · BandoriLove");
-  if (renderOnly) {
-    $("#connect").hidden = true;
-    return;
-  }
+  $("#open-performance").hidden = renderOnly || view.petWindow || view.wallpaper;
+  $("#performance-toggle").hidden = renderOnly || view.petWindow || view.wallpaper;
+  $("#performance-toggle").setAttribute("aria-pressed", String(Boolean(view.state.settings.performanceEnabled)));
+  $("#pet-visibility").setAttribute("aria-pressed", String(view.state.petShowing));
+  $("#pet-visibility").title = view.state.petShowing ? "退出桌宠" : "显示桌宠";
+  $("#apply-wallpaper").setAttribute("aria-pressed", String(view.state.wallpaperShowing));
+  $("#apply-wallpaper").title = view.state.wallpaperShowing ? "退出壁纸" : "应用壁纸";
+  const menuEnabled = renderOnly ? view.state.thirdPartyMenuEnabled : view.state.touchMenuEnabled !== false;
+  $("#touch-menu").checked = menuEnabled;
+  $("#touch-menu").closest("label").title = renderOnly ? "从右下角三点打开菜单" : "点击角色腿部打开菜单";
+  if (!menuEnabled && !$("#pet-menu").hidden) showPetMenu(false);
+  updateThirdPartyMenuButton();
+  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLovePet";
   const settings = view.state.settings;
   $("#captions-toggle").checked = Boolean(settings.captions);
+  if (renderOnly) { updateSubtitle(); return; }
   $("#body-toggle").checked = Boolean(settings.bodyOnly);
   $("#click-through-toggle").checked = settings.preventClickThrough !== false;
-  const viewerButton = $("#connect");
-  viewerButton.setAttribute("aria-pressed", String(view.state.viewerLinked));
-  viewerButton.title = view.state.viewerLinked ? (view.standalone ? "断开 Live2DViewerEX 控制" : "已连接 Live2DViewerEX") : "连接 Live2DViewerEX";
   syncVoiceVolume();
   $("#game-name").textContent = view.catalog.game;
   $("#band-name").textContent = view.catalog.group.replace(/（Garupa）/g, "");
@@ -472,6 +367,8 @@ function updateTabIndicator() {
 }
 
 async function applySelection(state, imported = false) {
+  imported ||= view.modelRecord !== undefined && view.modelRecord !== state.modelRecord;
+  view.modelRecord = state.modelRecord;
   view.state = state;
   const roleChanged = view.catalog?.id !== state.role;
   if (imported || roleChanged || (view.catalog.voiceLibraryRevision || 0) !== (state.voiceLibraryRevision || 0)) {
@@ -479,6 +376,9 @@ async function applySelection(state, imported = false) {
     const catalog = await api("catalog/" + state.role);
     if (revision !== view.importRevision || view.state.role !== state.role) return;
     view.catalog = catalog;
+    view.viewer = null;
+    view.viewerOutfit = null;
+    view.viewerCostume = null;
     if (roleChanged) view.currentExpression = null;
     view.itemsSignature = "";
     if (roleChanged) $("#item-search").value = "";
@@ -500,10 +400,12 @@ function resetModelView() {
     // Reusing the preview renderer can change its host size without a window resize.
     syncRendererSize(width, height);
   }
-  const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height);
+  const scene = view.wallpaper || document.documentElement.matches(".scene-edit, .immersive-preview");
+  const layer = scene ? view.sceneCharacter : null;
+  const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height) * (layer?.scale ?? 1);
   model.scale.set(scale);
   model.anchor.set(.5, 1);
-  model.position.set(x + width / 2, y + height * .98);
+  model.position.set(x + width * (.5 + (layer?.x ?? 0)), y + height * (.5 + .48 * (layer?.scale ?? 1) + (layer?.y ?? 0)));
   if (view.petWindow) {
     const style = host.parentElement.style;
     style.setProperty("--pet-left", `${x}px`);
@@ -511,6 +413,122 @@ function resetModelView() {
     style.setProperty("--pet-bottom", `${y + height}px`);
   }
   subtitleDrag.layout();
+  placePetMenu();
+}
+
+function setSceneCharacterTransform(layer) {
+  view.sceneCharacter = layer;
+  resetModelView();
+}
+
+function button(text, className, action) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.textContent = text;
+  node.className = className;
+  node.onclick = action;
+  return node;
+}
+
+function rectContains(rect, point) {
+  return point && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function placePetMenu() {
+  if (!view.model || (!view.petWindow && !view.wallpaper)) return;
+  const bounds = view.model.getBounds();
+  const stage = $("#canvas-host").getBoundingClientRect();
+  const frame = view.sizePreview;
+  const hint = $("#pet-menu-button");
+  const right = frame ? frame.x + frame.width : stage.right;
+  const bottom = frame ? frame.y + frame.height : stage.bottom;
+  const anchorX = Math.max(22, Math.min(innerWidth - 22, right - 22));
+  const anchorY = Math.max(22, Math.min(innerHeight - 22, bottom - 22));
+  hint.style.left = anchorX + "px";
+  hint.style.top = anchorY + "px";
+  const menu = $("#pet-menu");
+  const thirdParty = view.catalog?.renderOnly;
+  const x = thirdParty ? anchorX + 16 - menu.offsetWidth : stage.left + bounds.x + bounds.width * .73;
+  const y = thirdParty ? anchorY - menu.offsetHeight - 12 : stage.top + bounds.y + bounds.height * .36;
+  menu.style.left = Math.max(6, Math.min(innerWidth - menu.offsetWidth - 6, x)) + "px";
+  menu.style.top = Math.max(6, Math.min(innerHeight - menu.offsetHeight - 6, y)) + "px";
+}
+
+function updateThirdPartyMenuButton() {
+  const visible = (view.petWindow || view.wallpaper) && view.model && view.catalog?.renderOnly &&
+    view.state?.thirdPartyMenuEnabled && $("#pet-menu").hidden;
+  $("#pet-menu-button").hidden = !visible;
+  if (visible) placePetMenu();
+}
+
+function showPetMenu(show = $("#pet-menu").hidden) {
+  const menu = $("#pet-menu");
+  menu.hidden = !show;
+  $("#pet-menu-button").hidden = true;
+  for (const button of menu.querySelectorAll("[data-menu]")) {
+    const action = button.dataset.menu;
+    const loop = ["action", "voice", "costume"].includes(action);
+    button.hidden = view.catalog?.renderOnly && (loop || action === "reset");
+    if (loop) button.textContent = (view.state.looping[action] ? "停止循环" : "循环") + labels[action === "costume" ? "costume" : action];
+    if (action === "stop") button.textContent = view.wallpaper ? "退出壁纸" : "退出桌宠";
+  }
+  if (show) placePetMenu();
+  else updateThirdPartyMenuButton();
+}
+
+$("#pet-menu-button").onclick = () => showPetMenu(true);
+$("#pet-menu").onclick = safely(async (event) => {
+  const action = event.target.closest("button")?.dataset.menu;
+  if (!action) return;
+  showPetMenu(false);
+  if (action === "panel") window.desktopPet.showPanel();
+  else if (action === "stop") window.desktopPet.stopDisplay();
+  else if (action === "reset") await stopAll();
+  else if (["action", "voice", "costume"].includes(action)) {
+    if (view.state.looping[action]) await api("stop", { kind: action });
+    else await api("operate", { kind: action, loop: true, random: true });
+  }
+});
+
+if (view.wallpaper) {
+  let holdTimer, press, following;
+  function focus(point) {
+    const model = view.model;
+    const internal = model?.internalModel;
+    if (!internal) return;
+    if (!point) { internal.focusController.focus(0, 0); return; }
+    const stage = $("#canvas-host").getBoundingClientRect();
+    const target = model.toModelPosition(new PIXI.Point(point.x - stage.left, point.y - stage.top));
+    internal.focusController.focus(target.x / internal.originalWidth * 2 - 1, 1 - target.y / internal.originalHeight * 2);
+  }
+  window.desktopPet.watchWallpaperPointer(({ action, x, y }) => {
+    const point = { x: x * innerWidth, y: y * innerHeight };
+    if (action === "down") {
+      press = point;
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => { following = true; focus(point); }, 300);
+    } else if (action === "move" && press) {
+      if (following) focus(point);
+      else if (Math.hypot(point.x - press.x, point.y - press.y) > 8) { clearTimeout(holdTimer); press = null; }
+    } else if (action === "up" || action === "cancel") {
+      clearTimeout(holdTimer);
+      if (following) focus(null);
+      else if (press && action === "up") {
+        const target = document.elementFromPoint(point.x, point.y)?.closest("#pet-menu button, #pet-menu-button");
+        if (target) target.click();
+        else view.interactAt?.({ clientX: point.x, clientY: point.y });
+      }
+      following = false;
+      press = null;
+    }
+  });
+}
+
+function setImmersive(active) {
+  document.documentElement.classList.toggle("immersive-preview", active);
+  $("#immersive-preview").textContent = active ? "退出纯享" : "纯享";
+  window.desktopPet?.fullscreen?.(active);
+  resetModelView();
 }
 
 function renderResolution(width, height) {
@@ -600,7 +618,7 @@ async function loadModel(key, keepCurrent = false) {
   $("#model-loading").hidden = false;
   $("#stage-error").hidden = true;
   const host = $("#canvas-host");
-  if (!view.petWindow && !keepCurrent) {
+  if (!view.petWindow && !view.wallpaper && !keepCurrent) {
     view.model = null;
     if (view.app) {
       disposeModels(view.app.stage.removeChildren());
@@ -628,10 +646,17 @@ async function loadModel(key, keepCurrent = false) {
     }
     const costume = currentCostume();
     const url = `/api/preview/${view.catalog.id}/${costume.id}`;
-    const metadata = await previewConfig(url, view.importRevision);
+    let packed = null;
+    if (view.catalog.viewerPackage) {
+      const viewer = view.viewer || await window.viewerInteraction.load(asset("viewer.json"));
+      if (token !== view.request) return;
+      view.viewer = viewer;
+      packed = await viewer.prepare(view.viewerOutfit || viewer.initial);
+    }
+    const metadata = packed?.metadata || await previewConfig(url, view.importRevision);
     if (token !== view.request) return;
     const model = await PIXI.live2d.Live2DModel.from(metadata, { autoInteract: false, motionPreload: "NONE" });
-    synchronizeMotionFades(model, metadata);
+    if (!packed) synchronizeMotionFades(model, metadata);
     if (token !== view.request) { model.destroy({ children: true }); return; }
     if (model.internalModel.coreModel.isUsingMasking?.()) {
       const gl = view.app.renderer.gl;
@@ -640,18 +665,20 @@ async function loadModel(key, keepCurrent = false) {
     }
     const outgoing = view.app.stage.removeChildren();
     view.model = model;
+    view.viewerCostume = packed;
     const { width, height } = model.getLocalBounds();
     view.modelSize = { width, height };
     view.mouthIds = metadata.pageMouthIds || [];
     view.app.stage.addChild(model);
     model.autoInteract = false;
     resetModelView();
+    updateThirdPartyMenuButton();
     model.internalModel.on("beforeModelUpdate", updateMouth);
     view.app.renderer.render(view.app.stage, { clear: true });
     if (view.petWindow) window.desktopPet?.firstFrame?.();
     disposeModels(outgoing);
     host.onpointermove = (event) => {
-      if (!view.model || !$("#model-loading").hidden) return;
+      if (!view.model || view.wallpaper || !$("#model-loading").hidden) return;
       const hostBounds = host.getBoundingClientRect();
       const { x, y, width, height } = view.sizePreview ?? { x: 0, y: 0, width: hostBounds.width, height: hostBounds.height };
       const horizontal = (event.clientX - hostBounds.left - x) / width;
@@ -681,6 +708,7 @@ async function loadModel(key, keepCurrent = false) {
       const y = event.clientY - rectangle.top;
       const frame = view.sizePreview;
       if (frame && (x < frame.x || x > frame.x + frame.width || y < frame.y || y > frame.y + frame.height)) return;
+      if (packed) return packed.hit(view.model, x, y);
       const point = view.model.toModelPosition(new PIXI.Point(x, y));
       const internal = view.model.internalModel;
       if (costume.cubism3) {
@@ -702,7 +730,8 @@ async function loadModel(key, keepCurrent = false) {
       };
       const cursor = (point) => {
         const { gl } = view.app.renderer;
-        if (drag || subtitleDrag.dragging || performance.now() < zoomActiveUntil) return setHit(true);
+        if (drag || subtitleDrag.dragging || performance.now() < zoomActiveUntil ||
+            [$("#pet-menu"), $("#pet-menu-button")].some(node => !node.hidden && rectContains(node.getBoundingClientRect(), point))) return setHit(true);
         if (!point || !view.model || !gl) {
           previousPoint = undefined;
           return setHit(false);
@@ -767,14 +796,34 @@ async function loadModel(key, keepCurrent = false) {
         if (!view.catalog.renderOnly) window.desktopPet.showPanel();
       };
     }
-    host.onclick = safely(async (event) => {
-      event.stopPropagation();
-      if (event.target !== view.app.view || suppressClick) return;
+    view.interactAt = safely(async (event) => {
+      if (document.documentElement.classList.contains("scene-edit") && !document.documentElement.classList.contains("scene-preview")) return;
+      if (!view.model || !$("#model-loading").hidden) return;
       const region = hitRegion(event);
+      if (view.catalog.renderOnly) {
+        if (!packed) return;
+        const rect = host.getBoundingClientRect();
+        const onModel = view.model.getBounds().contains(event.clientX - rect.left, event.clientY - rect.top);
+        const action = region || onModel ? packed.choose(region) : null;
+        if (!action) return;
+        if (action.outfit) {
+          view.viewerOutfit = action.outfit;
+          await loadModel(view.modelKey, true);
+        } else {
+          if (action.sound) await applyPlay({ kind: "voice", item: { url: action.sound, caption: action.text, name: action.text } });
+          if (action.expression) await view.model.expression(action.expression);
+          if (action.motion) await view.model.motion(action.motion, 0, 3);
+        }
+        return;
+      }
       if (!region) return;
       if (region === "menu") {
-        if (view.petWindow) window.desktopPet?.showPanel();
-        else if (!view.standalone) await api("menu", {});
+        if (view.state.touchMenuEnabled !== false && (view.petWindow || view.wallpaper)) showPetMenu();
+        return;
+      }
+      if (region === "body" && costume.flag) {
+        if (view.state.settings.performanceEnabled) await enableAudio();
+        await api("performance/touch", { role: view.catalog.id, costume: costume.flag });
         return;
       }
       if (region === "voice") await enableAudio();
@@ -783,9 +832,16 @@ async function loadModel(key, keepCurrent = false) {
       if (kind === "costume") await applySelection(view.state);
       else renderState();
     });
+    host.onclick = (event) => {
+      if (event.target === view.app.view && !suppressClick) return view.interactAt(event);
+    };
+    if (view.wallpaper) window.sceneLayers?.firstFrame();
     setTimeout(() => {
       if (token !== view.request || !view.model) return;
-      if (!view.petWindow && !view.catalog.renderOnly) captureThumbnail(key);
+      if (!view.petWindow && !view.wallpaper) {
+        if (!view.catalog.renderOnly) captureThumbnail(key);
+        window.captureModelHistory?.();
+      }
       if (view.tab === "costume") renderItems();
     }, 1000);
   } catch (error) {
@@ -888,7 +944,10 @@ async function queueVisibleThumbnails() {
 }
 
 function syncVoiceVolume() {
-  if (view.volume) view.volume.gain.value = !view.petWindow && (view.viewerMode || view.state?.linked) ? 0 : 1;
+  if (!view.volume) return;
+  const { petVisible, wallpaperActive } = view.state;
+  const audible = view.catalog?.renderOnly || (petVisible ? view.petWindow : wallpaperActive ? view.wallpaper : !view.petWindow && !view.wallpaper);
+  view.volume.gain.value = Number(audible);
 }
 
 function enableAudio() {
@@ -925,9 +984,7 @@ function updateMouth() {
 
 async function playItem(kind, item) {
   if (kind === "voice") await enableAudio();
-  if (kind === "voice" && (view.viewerMode && view.state.viewerLinked
-    ? view.state.playing.voice?.id === item.id
-    : view.visibleVoice?.id === item.id && !audio.paused)) {
+  if (kind === "voice" && view.visibleVoice?.id === item.id && !audio.paused) {
     view.state = await api("stop", { kind });
     stopLocal(kind);
     return;
@@ -968,10 +1025,9 @@ async function applyPlay(data) {
   const { kind, item } = data;
   if (data.costume !== undefined && data.costume !== currentCostume().id) return;
   if (kind === "voice") {
-    if (view.state.desktopProvider === "pet" && !view.petWindow) return;
     const generation = ++audioGeneration;
     audio.pause();
-    audio.src = asset(item.file);
+    audio.src = item.url ?? asset(item.file);
     view.visibleVoice = item;
     updateSubtitle();
     try {
@@ -979,7 +1035,7 @@ async function applyPlay(data) {
       if (generation !== audioGeneration) return;
       await audio.play();
     } catch (error) {
-      if (generation === audioGeneration && !view.state.linked) toast("浏览器已阻止声音播放");
+      if (generation === audioGeneration) toast("浏览器已阻止声音播放");
     }
   } else if (kind === "action") {
     clearTimeout(actionTimer);
@@ -1090,7 +1146,7 @@ function enableCaptionDrag(card, bounds, report = () => {}) {
 }
 
 function updateSubtitle() {
-  const visible = Boolean(view.visibleVoice && view.state?.settings.captions && !audio.ended);
+  const visible = Boolean((view.visibleVoice?.caption || view.visibleVoice?.name) && view.state?.settings.captions && !audio.ended);
   subtitle.hidden = !visible;
   if (visible) {
     $("#subtitle-text").textContent = view.visibleVoice.caption || view.visibleVoice.name;
@@ -1121,33 +1177,21 @@ async function boot() {
     const frame = await window.desktopPet.getFrame();
     view.sizePreview ??= frame;
   }
-  const mode = await api("mode");
-  view.standalone = mode.standalone;
-  const query = new URLSearchParams(location.search);
-  try {
-    view.state = await api("state");
-  } catch (error) {
-    if (!view.viewerMode) throw error;
-    location.replace("/");
-    return;
-  }
+  view.standalone = true;
+  view.state = await api("state");
   updateRoleVisibility();
-  if (view.standalone && !view.state.role) return;
-  const role = query.get("role");
-  if (role && role !== view.state.role && (await api("library")).some((entry) => entry.id === role)) {
-    view.state = await api("select", { role, costume: Number(query.get("costume")) || undefined });
-  }
-  if (!view.standalone && query.get("desktop") === "1") {
-    view.state = await api("connect", { attach: true });
-  }
+  if (!view.state.role) return;
   await applySelection(view.state);
   watchRoleEvents();
 }
 
 function updateRoleVisibility() {
-  const desktopControls = !view.petWindow && (!view.standalone || Boolean(window.desktopPet)) && Boolean(view.state.role);
+  const desktopControls = !view.petWindow && !view.wallpaper && Boolean(window.desktopPet) && Boolean(view.state.role);
   $("#pet-visibility").hidden = !desktopControls;
-  $("#connect").hidden = !desktopControls || view.state.renderOnly;
+  $("#apply-wallpaper").hidden = !desktopControls;
+  $("#open-settings").hidden = view.petWindow || view.wallpaper || !window.desktopPet;
+  document.documentElement.toggleAttribute("data-no-model", !view.state.role);
+  $("#immersive-preview").hidden = !desktopControls;
   if (view.standalone) {
     document.body.classList.add("standalone-preview");
     $("#exit-preview").hidden = Boolean(window.desktopPet);
@@ -1163,7 +1207,7 @@ function updateRoleVisibility() {
 }
 
 function watchRoleEvents() {
-  const events = new EventSource(view.viewerMode ? "/api/events?viewerex=1" : "/api/events");
+  const events = new EventSource("/api/events");
   view.events = events;
   let eventQueue = Promise.resolve();
   const handleEvent = async (message) => {
@@ -1176,11 +1220,12 @@ function watchRoleEvents() {
       if (!view.switchingCostume || event.state.settings.costume === view.desiredCostume) await applySelection(event.state);
     }
     else if (event.type === "play") await applyPlay(event.data);
-    else if (event.type === "catalog" && event.data.role === view.catalog.id) {
-      const catalog = await api("catalog/" + view.catalog.id);
-      if (view.events === events) receiveVoiceCatalog({ catalog, state: event.state });
+    else if (event.type === "performance") {
+      const { costume, tracks } = event.data;
+      await Promise.all(Object.entries(tracks).map(([kind, item]) => applyPlay({ kind, item, costume })));
     }
-    else if (event.type === "stop" || (event.type === "ended" && (event.data !== "voice" || view.viewerMode))) stopLocal(event.data);
+    else if (event.type === "scene") window.sceneLayers?.receive(event.data);
+    else if (event.type === "stop" || (event.type === "ended" && event.data !== "voice")) stopLocal(event.data);
     else if (event.type === "clear-expression") resetExpression();
     else if (event.type === "reset") { for (const kind of ["action", "voice", "costume"]) stopLocal(kind); resetExpression(); }
     else if (event.type === "notice") toast(event.data);
@@ -1193,12 +1238,12 @@ function watchRoleEvents() {
     const state = await api("state");
     if (view.events === events) await applySelection(state);
   });
-  events.onerror = () => { $("#connect").title = "页面连接恢复中"; };
+
 }
 
 for (const id of ["#import-first-role", "#import-role"]) {
   $(id).addEventListener("click", () => {
-    if (window.desktopPet?.pickRole) loadRolePackage("正在加载模型…", () => window.desktopPet.pickRole());
+    if (window.desktopPet?.pickRole) window.openModelLibrary?.();
     else $("#role-zip").click();
   });
 }
@@ -1223,7 +1268,7 @@ async function loadRolePackage(message, load) {
   try {
     await preferenceQueue;
     if (await load()) {
-      if (!window.PIXI?.live2d || view.viewerMode) {
+      if (!window.PIXI?.live2d) {
         location.replace("/");
         return;
       }
@@ -1263,7 +1308,6 @@ $("#role-zip").addEventListener("change", (event) => {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
-    await window.desktopPet?.rememberPackage(file);
     return true;
   });
 });
@@ -1275,13 +1319,6 @@ document.querySelectorAll("[data-filter]").forEach((button) => button.addEventLi
   renderItems();
 }));
 $("#item-search").addEventListener("input", renderItems);
-$("#upload-voice").addEventListener("click", () => {
-  $("#voice-upload-dialog").dataset.role = view.catalog.id;
-  $("#voice-upload-error").hidden = true;
-  $("#voice-upload-dialog").showModal();
-});
-$("#voice-upload-form").addEventListener("submit", uploadVoice);
-$("#voice-delete-form").addEventListener("submit", deleteVoice);
 document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => {
   const dialog = button.closest("dialog");
   if (!dialog.dataset.busy) dialog.close();
@@ -1314,31 +1351,40 @@ document.querySelectorAll("[data-order]").forEach((button) => button.addEventLis
 $("#loop-interval").addEventListener("change", safely((event) =>
   savePreference(view.tab + "Interval", Number(event.target.value))
 ));
-for (const [id, key] of [["#captions-toggle", "captions"], ["#body-toggle", "bodyOnly"], ["#click-through-toggle", "preventClickThrough"]]) {
+for (const [id, key] of [["#captions-toggle", "captions"], ["#body-toggle", "bodyOnly"], ["#click-through-toggle", "preventClickThrough"], ["#touch-menu", "touchMenuEnabled"]]) {
   $(id).addEventListener("change", safely(async (event) => {
-    try { view.state = await api("preference", { key, value: event.target.checked }); }
+    const preference = id === "#touch-menu" && view.catalog?.renderOnly ? "thirdPartyMenuEnabled" : key;
+    try { view.state = await api("preference", { key: preference, value: event.target.checked }); }
     finally { renderState(); }
   }));
 }
-$("#connect").addEventListener("click", safely(async () => {
-  const button = $("#connect");
-  button.disabled = true;
-  try {
-    if (view.standalone && view.state.viewerLinked) {
-      await api("disconnect-viewer", {}, false);
-      location.replace("/");
-    } else {
-      const state = await api("connect", { provider: "viewerex", attach: true }, false);
-      if (view.standalone) location.replace("/?viewerex=1");
-      else view.state = state;
-    }
-  } finally { button.disabled = false; renderState(); }
-}));
+$("#open-performance").onclick = createPerformanceEditor({
+  read: () => view.catalog && view.standalone && !view.catalog.renderOnly && {
+    catalog: view.catalog,
+    costume: currentCostume(),
+    enabled: Boolean(view.state.settings.performanceEnabled),
+    groups: view.state.settings.performanceGroups,
+  },
+  setEnabled: (role, value) => {
+    if (role !== view.catalog?.id) throw new Error("已切换角色，请重新打开演出设置");
+    return api("preference", { key: "performanceEnabled", value });
+  },
+  save: (role, costume, preset, group) => api("performance/save", { role, costume, preset, group }),
+});
+$("#open-settings").onclick = safely(async () => {
+  $("#settings").showModal();
+  if (window.desktopPet) $("#pet-placement").value = await window.desktopPet.placement();
+});
+$("#pet-placement").onchange = safely(async (event) => window.desktopPet.placement(event.target.value));
+$("#performance-toggle").onclick = safely(() => savePreference("performanceEnabled", !view.state.settings.performanceEnabled));
+$("#immersive-preview").onclick = () => setImmersive(!document.documentElement.classList.contains("immersive-preview"));
+window.addEventListener("scene-editor-change", () => { showPetMenu(false); resetModelView(); });
 $("#pet-visibility").addEventListener("click", safely(async () => {
   const button = $("#pet-visibility");
   button.disabled = true;
   try {
-    view.state = view.state.petLinked ? await api("disconnect-pet", {}) : await api("connect", { provider: "pet" });
+    await window.desktopPet.togglePet();
+    view.state = await api("state");
   } finally { button.disabled = false; renderState(); }
 }));
 $("#stop-all").addEventListener("click", safely(stopAll));
@@ -1353,6 +1399,7 @@ $("#clear-expression").addEventListener("click", safely(async () => {
 }));
 $("#reload-preview").addEventListener("click", safely(() => loadModel(view.modelKey)));
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.documentElement.classList.contains("immersive-preview")) setImmersive(false);
   if (event.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) { event.preventDefault(); $("#item-search").focus(); }
   if (event.target.matches("[role=tab]") && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
     event.preventDefault();

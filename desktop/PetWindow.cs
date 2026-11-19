@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 internal static class PetWindow
 {
@@ -7,6 +9,8 @@ internal static class PetWindow
     [DllImport("user32.dll")] private static extern IntPtr GetTopWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
@@ -56,20 +60,40 @@ internal static class PetWindow
         if (GetWindowThreadProcessId(window, out owner) == 0 || owner != parent) return 2;
         SetProcessDpiAwarenessContext(new IntPtr(-4)); // Use physical pixels for Electron's screen coordinates.
 
-        string input;
-        while ((input = Console.ReadLine()) != null && GetWindowThreadProcessId(window, out owner) != 0 && owner == parent)
+        var commands = new BlockingCollection<string>();
+        new Thread(() => {
+            string command;
+            while ((command = Console.ReadLine()) != null) commands.Add(command);
+            commands.CompleteAdding();
+        }) { IsBackground = true }.Start();
+        bool homeOnly = false, hiddenForHome = false;
+        while (!commands.IsCompleted && GetWindowThreadProcessId(window, out owner) != 0 && owner == parent)
         {
-            if (input == "top" || input == "bottom")
+            string input;
+            if (commands.TryTake(out input, homeOnly ? 60 : 250))
             {
-                ChooseLayer(window, input == "top");
-                continue;
+                if (input == "top" || input == "bottom" || input == "home")
+                {
+                    homeOnly = input == "home";
+                    ChooseLayer(window, input != "bottom");
+                    if (!homeOnly && hiddenForHome) { ShowWindow(window, 4); hiddenForHome = false; Console.WriteLine("visible 1"); }
+                }
+                else
+                {
+                    string[] fields = input.Split(' ');
+                    int x, y;
+                    const uint flags = NoActivate | NoZOrder | NoOwnerZOrder;
+                    if (fields.Length == 3 && fields[0] == "move" &&
+                        int.TryParse(fields[1], out x) && int.TryParse(fields[2], out y))
+                        SetWindowPos(window, IntPtr.Zero, x, y, 0, 0, flags | NoSize);
+                }
             }
-            string[] fields = input.Split(' ');
-            int x, y;
-            const uint flags = NoActivate | NoZOrder | NoOwnerZOrder;
-            if (fields.Length == 3 && fields[0] == "move" &&
-                int.TryParse(fields[1], out x) && int.TryParse(fields[2], out y))
-                SetWindowPos(window, IntPtr.Zero, x, y, 0, 0, flags | NoSize);
+            if (!homeOnly) continue;
+            IntPtr foreground = GetForegroundWindow();
+            bool home = foreground == GetShellWindow() ||
+                (foreground != IntPtr.Zero && FindWindowEx(foreground, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero);
+            if (home && hiddenForHome) { ShowWindow(window, 4); hiddenForHome = false; Console.WriteLine("visible 1"); }
+            else if (!home && IsWindowVisible(window)) { ShowWindow(window, 0); hiddenForHome = true; Console.WriteLine("visible 0"); }
         }
         return 0;
     }
