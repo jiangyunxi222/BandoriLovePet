@@ -498,10 +498,7 @@ function resetModelView() {
   if (!width || !height) return;
   if (!view.petWindow) {
     // Reusing the preview renderer can change its host size without a window resize.
-    const renderer = view.app.renderer;
-    if (renderer.screen.width !== width || renderer.screen.height !== height) {
-      renderer.resize(width, height);
-    }
+    syncRendererSize(width, height);
   }
   const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height);
   model.scale.set(scale);
@@ -517,22 +514,27 @@ function resetModelView() {
 }
 
 function renderResolution(width, height) {
-  const resolution = Math.min(devicePixelRatio, 2);
-  return view.petWindow ? Math.min(resolution, Math.sqrt(2_500_000 / (width * height))) : resolution;
+  const limits = view.drawableLimit;
+  return limits ? Math.min(devicePixelRatio || 1, limits.width / width, limits.height / height) : devicePixelRatio || 1;
 }
 
-function resizePetRenderer(host, frame) {
+function syncRendererSize(width, height) {
   const renderer = view.app?.renderer;
-  if (!renderer || !host.clientWidth || !host.clientHeight) return false;
-  const width = frame?.surfaceWidth ?? host.clientWidth;
-  const height = frame?.surfaceHeight ?? host.clientHeight;
+  if (!renderer || !width || !height) return false;
   const resolution = renderResolution(width, height);
-  const previous = view.petRendererSize;
+  const previous = view.rendererSize;
   if (previous?.width === width && previous.height === height && previous.resolution === resolution) return false;
   if (renderer.resolution !== resolution) renderer.resolution = resolution;
   renderer.resize(width, height);
-  view.petRendererSize = { width, height, resolution };
+  view.rendererSize = { width, height, resolution };
   return true;
+}
+
+function watchScreenDensity(update) {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener("change", () => {
+    update();
+    watchScreenDensity(update);
+  }, { once: true });
 }
 
 function disposeModels(models) {
@@ -610,14 +612,16 @@ async function loadModel(key, keepCurrent = false) {
     if (!view.app) {
       const width = view.sizePreview?.surfaceWidth ?? host.clientWidth;
       const height = view.sizePreview?.surfaceHeight ?? host.clientHeight;
-      const resolution = renderResolution(width, height);
       view.app = new PIXI.Application({
-        resizeTo: view.petWindow ? null : host,
-        width, height,
+        width: 1, height: 1,
         backgroundAlpha: 0, clearBeforeRender: true, antialias: true,
-        resolution, autoDensity: true, preserveDrawingBuffer: true,
+        resolution: 1, autoDensity: true, preserveDrawingBuffer: true,
       });
-      if (view.petWindow) view.petRendererSize = { width, height, resolution };
+      const gl = view.app.renderer.gl;
+      const maxSide = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      const [maxWidth, maxHeight] = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+      view.drawableLimit = { width: Math.min(maxSide, maxWidth), height: Math.min(maxSide, maxHeight) };
+      syncRendererSize(width, height);
       host.append(view.app.view);
       view.app.renderer.textureGC.maxIdle = 300;
       view.app.renderer.textureGC.checkCountMax = 300;
@@ -629,6 +633,11 @@ async function loadModel(key, keepCurrent = false) {
     const model = await PIXI.live2d.Live2DModel.from(metadata, { autoInteract: false, motionPreload: "NONE" });
     synchronizeMotionFades(model, metadata);
     if (token !== view.request) { model.destroy({ children: true }); return; }
+    if (model.internalModel.coreModel.isUsingMasking?.()) {
+      const gl = view.app.renderer.gl;
+      // The default 256-pixel mask atlas leaks lip textures at high zoom.
+      model.internalModel.renderer.setClippingMaskBufferSize(Math.min(1024, gl.getParameter(gl.MAX_TEXTURE_SIZE)));
+    }
     const outgoing = view.app.stage.removeChildren();
     view.model = model;
     const { width, height } = model.getLocalBounds();
@@ -1381,13 +1390,14 @@ if (view.petWindow) {
       ...target,
       ...Object.fromEntries(dimensions.map(key => [key, previous[key] + (target[key] - previous[key]) * .38])),
     } : target;
-    const resized = resizePetRenderer(canvasHost, target);
+    const resized = syncRendererSize(target.surfaceWidth ?? canvasHost.clientWidth, target.surfaceHeight ?? canvasHost.clientHeight);
     resetModelView();
     if (resized && view.model) view.app.renderer.render(view.app.stage, { clear: true });
     if (moving) scheduleDraw();
   }
   new ResizeObserver(scheduleDraw).observe(canvasHost);
   addEventListener("resize", scheduleDraw);
+  watchScreenDensity(scheduleDraw);
   window.desktopPet.watchSize((bounds, animated) => {
     nextFrame = bounds;
     animate = animated;
@@ -1395,6 +1405,7 @@ if (view.petWindow) {
   });
 } else {
   new ResizeObserver(resetModelView).observe(canvasHost);
+  watchScreenDensity(resetModelView);
 }
 new ResizeObserver(updateTabIndicator).observe($(".tabs"));
 document.fonts.ready.then(updateTabIndicator);
