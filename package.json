@@ -1,7 +1,7 @@
 {
   "name": "bandorilove-desktop-pet",
   "productName": "BandoriLovePet",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "BandoriLove Live2D desktop pets and dynamic wallpapers for Windows",
   "main": "desktop/main.cjs",
   "scripts": { "start": "electron ." }

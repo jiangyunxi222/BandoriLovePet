@@ -27,6 +27,8 @@ MyGO!!!!! 与 Ave Mujica 在两库均有收录，模型和衣装随游戏版本�
 2. 点「更换模型」，导入发布页的单角色 ZIP，也可以选择已导入的模型。首页的「演出」「桌宠」「壁纸」按钮有颜色时表示已开启。
 3. 左键拖动桌宠，**Shift + 滑轮**缩放。完整角色包点腿部开菜单。右击托盘 **b\*** 可调大小、层级，或退出桌宠和壁纸。
 
+Windows 1.0.0 采用独立的安装目录和用户数据目录，可与旧版并存。启动后在新版导入需要使用的模型。
+
 关闭主窗口后，托盘继续运行已开启的桌宠和壁纸。「退出壁纸」会露出原系统壁纸。「退出程序」关闭托盘和桌面显示。可在 Windows「设置 → 应用 → 已安装的应用」卸载。
 
 ### Android
@@ -68,6 +70,8 @@ pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEdito
 ```
 
 Windows 输出为 `dist/BandoriLovePet-Setup.exe`。Android 构建见 [Android 分支说明](https://github.com/jiangyunxi222/BandoriLovePet/blob/feature/android-apk/android/README.md)。第三方组件见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
+
+使用已安装在当前用户证书库中的可信代码签名证书时，为构建命令追加 `-SignTool <signtool.exe 路径> -CodeSigningThumbprint <证书指纹>`。脚本会签名应用、辅助程序、安装器和卸载器，并检查公信验证结果。
 
 Windows 与 Android 使用相同的发布版本。每次更新末位加一，满十向前进位，例如 `1.0.9` 后为 `1.1.0`。
 

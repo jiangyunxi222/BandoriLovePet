@@ -3,7 +3,10 @@ param(
     [Parameter(Mandatory = $true)][string]$ResourceEditor,
     [Parameter(Mandatory = $true)][string]$InnoSetupCompiler,
     [string]$PanelSource = "",
-    [string]$PyInstallerModules = ""
+    [string]$PyInstallerModules = "",
+    [string]$SignTool,
+    [string]$CodeSigningThumbprint,
+    [string]$CodeSigningTimestampUrl = 'http://timestamp.digicert.com'
 )
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -17,6 +20,21 @@ $installerCompiler = (Resolve-Path -LiteralPath $InnoSetupCompiler).Path
 $panel = (Resolve-Path -LiteralPath $PanelSource).Path
 $icon = Join-Path $panel "ControlPanel.ico"
 $version = (Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json).version
+$signOptions = @()
+if ($SignTool -or $CodeSigningThumbprint) {
+    $CodeSigningThumbprint = $CodeSigningThumbprint -replace '\s', ''
+    if (!$SignTool -or $CodeSigningThumbprint -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'Pass -SignTool and the 40-digit -CodeSigningThumbprint from the current user certificate store.'
+    }
+    $SignTool = (Resolve-Path -LiteralPath $SignTool).Path
+    $signingCertificate = Get-ChildItem -Path Cert:/CurrentUser/My -CodeSigningCert |
+        Where-Object Thumbprint -eq $CodeSigningThumbprint
+    if (!$signingCertificate.HasPrivateKey -or $signingCertificate.NotBefore -gt (Get-Date) -or $signingCertificate.NotAfter -le (Get-Date)) {
+        throw 'The selected code signing certificate is unavailable, lacks its private key, or is outside its validity period.'
+    }
+    if ($CodeSigningTimestampUrl -notmatch '^https?://\S+$') { throw 'Pass a valid RFC 3161 timestamp URL.' }
+    $signOptions = @('/sha1', $CodeSigningThumbprint, '/fd', 'SHA256', '/tr', $CodeSigningTimestampUrl, '/td', 'SHA256')
+}
 if ($PyInstallerModules) { $env:PYTHONPATH = (Resolve-Path -LiteralPath $PyInstallerModules).Path }
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $build "pyinstaller-cache"
 New-Item -ItemType Directory -Path $build,$dist,$stage -Force | Out-Null
@@ -54,6 +72,24 @@ foreach ($runtime in @("live2d.min.js","live2dcubismcore.min.js")) {
 }
 python -m PyInstaller --noconfirm --onefile --windowed --icon $icon --name ControlPanel --distpath $backend --workpath (Join-Path $build "backend-work") --specpath $build (Join-Path $panel "server.py")
 if ($LASTEXITCODE) { throw "Control Panel build failed" }
-& $installerCompiler "/DAppVersion=$version" (Join-Path $root "installer.iss")
+$installerArgs = @("/DAppVersion=$version")
+if ($signOptions.Count) {
+    foreach ($executable in @(Join-Path $stage 'BandoriLovePet.exe') + @(
+        foreach ($helper in @('ControlPanel.exe', 'PetWindow.exe', 'WallpaperHost.exe')) { Join-Path $backend $helper }
+    )) {
+        & $SignTool sign @signOptions $executable
+        if ($LASTEXITCODE) { throw "Signing failed for $executable" }
+        & $SignTool verify /pa $executable
+        if ($LASTEXITCODE) { throw "Public trust verification failed for $executable" }
+    }
+    $installerArgs += '/DCodeSigning'
+    $installerArgs += ('/SBandoriLove=$q{0}$q sign {1} $f' -f $SignTool, ($signOptions -join ' '))
+}
+& $installerCompiler @installerArgs (Join-Path $root "installer.iss")
 if ($LASTEXITCODE) { throw "Installer build failed" }
-Get-FileHash -LiteralPath (Join-Path $dist "BandoriLovePet-Setup.exe")
+$installer = Join-Path $dist 'BandoriLovePet-Setup.exe'
+if ($signOptions.Count) {
+    & $SignTool verify /pa $installer
+    if ($LASTEXITCODE) { throw 'Public trust verification failed for the installer.' }
+}
+Get-FileHash -LiteralPath $installer

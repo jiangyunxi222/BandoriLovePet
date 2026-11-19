@@ -1,11 +1,11 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.0"
 #endif
 #ifndef InstallId
-  #define InstallId "BandoriLovePet"
+  #define InstallId "BandoriLovePet.Standalone"
 #endif
 #ifndef ShortcutName
-  #define ShortcutName "BandoriLovePet"
+  #define ShortcutName "BandoriLovePet 1.0"
 #endif
 
 [Setup]
@@ -14,7 +14,7 @@ AppName=BandoriLovePet
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppVersion}
 AppPublisher=BandoriLove
-DefaultDirName={localappdata}\Programs\BandoriLoveDesktopPet
+DefaultDirName={localappdata}\Programs\BandoriLovePet
 DisableDirPage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -28,6 +28,10 @@ OutputDir=dist
 OutputBaseFilename=BandoriLovePet-Setup
 Compression=lzma2/fast
 DiskSpanning=no
+#ifdef CodeSigning
+SignTool=BandoriLove
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -38,8 +42,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"
 
 [Files]
 Source: "build\player\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Refresh the legacy executable only if an earlier installation used that name.
-Source: "build\player\BandoriLovePet.exe"; DestDir: "{app}"; DestName: "BandoriLoveDesktopPet.exe"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{app}\BandoriLoveDesktopPet.exe'))
 
 [InstallDelete]
 Type: files; Name: "{app}\resources\app\desktop\viewer-menu.html"
@@ -51,22 +53,3 @@ Name: "{userdesktop}\{#ShortcutName}"; Filename: "{app}\BandoriLovePet.exe"; Wor
 
 [Run]
 Filename: "{app}\BandoriLovePet.exe"; Description: "{cm:LaunchProgram,BandoriLovePet}"; Flags: nowait postinstall skipifsilent
-
-[Code]
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  LegacyShortcut: String;
-  Shell, Shortcut: Variant;
-begin
-  if CurStep <> ssPostInstall then Exit;
-  LegacyShortcut := ExpandConstant('{userprograms}\BandoriLove Desktop Pet.lnk');
-  if not FileExists(LegacyShortcut) then Exit;
-  try
-    Shell := CreateOleObject('WScript.Shell');
-    Shortcut := Shell.CreateShortcut(LegacyShortcut);
-    if CompareText(Shortcut.TargetPath, ExpandConstant('{app}\BandoriLoveDesktopPet.exe')) = 0 then
-      DeleteFile(LegacyShortcut);
-  except
-    Log('Could not remove the legacy Start menu shortcut');
-  end;
-end;

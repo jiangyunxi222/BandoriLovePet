@@ -6,7 +6,7 @@ const { readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { setTimeout: delay } = require("node:timers/promises");
 const path = require("node:path");
 
-const home = path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BandoriLoveDesktopPet");
+const home = path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BandoriLovePet");
 const bundled = process.env.BANDORILOVE_PET_BUNDLE || path.join(process.resourcesPath, "panel");
 const profile = path.join(home, "profile");
 const statusFile = path.join(home, "preferences.json");
@@ -14,7 +14,7 @@ const startup = randomBytes(16).toString("hex");
 const roleImportToken = randomBytes(32).toString("hex");
 mkdirSync(home, { recursive: true });
 app.setPath("userData", path.join(home, "chromium"));
-app.setAppUserModelId("BandoriLove.DesktopPet");
+app.setAppUserModelId("BandoriLovePet.Standalone");
 let manager, pet, petWindowProcess, tray, backend, ownPort, wallpaper, wallpaperProcess;
 let trayMenu, petScene, petDrag, saveBoundsTimer;
 let quitting = false;
