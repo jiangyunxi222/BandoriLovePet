@@ -8,8 +8,8 @@ BanG Dream! Live2D 桌宠和动态壁纸。导入 Garupa 或 OurNotes 的单角�
 
 ## 角色库
 
-- **Garupa** 收录 Poppin’Party、Roselia、Pastel＊Palettes 等《少女乐团派对！》角色。[角色 ZIP](https://github.com/jiangyunxi222/GarupaLive2D/releases/latest)
-- **OurNotes** 收录夢限大みゅーたいぷ、millsage、一家Dumb Rock! 等《BanG Dream! Our Notes》角色。[角色 ZIP](https://github.com/jiangyunxi222/OurNotesLive2D/releases/latest)
+- **Garupa** 收录 Poppin’Party、Roselia、Pastel＊Palettes 等《少女乐团派对！》角色。[角色 ZIP](https://github.com/jiangyunxi222/GarupaLive2D-Windows/releases/latest)
+- **OurNotes** 收录夢限大みゅーたいぷ、millsage、一家Dumb Rock! 等《BanG Dream! Our Notes》角色。[角色 ZIP](https://github.com/jiangyunxi222/OurNotesLive2D-Windows/releases)
 
 MyGO!!!!! 与 Ave Mujica 在两库均有收录，模型和衣装随游戏版本而异。
 
