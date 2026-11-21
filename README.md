@@ -1,10 +1,10 @@
-# LovePet
+# LovePet Windows
 
 ![LovePet · Windows 与 Android 的 Live2D 桌宠](docs/media/cover.png)
 
 BanG Dream! Live2D 桌宠和动态壁纸。导入 Garupa 或 OurNotes 的单角色 ZIP，即可预览、换装、播放动作和语音，还可以为不同衣装配置演出组。
 
-**[Windows 安装包与 Android APK](https://github.com/jiangyunxi222/BandoriLovePet/releases)**
+**[Windows 安装包](https://github.com/jiangyunxi222/LovePet-Windows/releases/latest)** · [Android APK](https://github.com/jiangyunxi222/LovePet-Android/releases/latest)
 
 ## 角色库
 
@@ -33,7 +33,7 @@ LovePet 1.0.0 沿用 Windows 独立版的安装目录和用户数据。此前 Wi
 
 ### Android
 
-1. 在 Android 11 及以上安装发布页的 `LovePet-1.0.0-Android.apk`，打开应用并选择角色包。符合 LovePet 角色包协议的 ZIP、LPK 和 WPK 均可加载应用工作台。
+1. 在 Android 11 及以上安装安卓版发布页的 APK，打开应用并选择角色包。符合 LovePet 角色包协议的 ZIP、LPK 和 WPK 均可加载应用工作台。[LovePet Android 发布页](https://github.com/jiangyunxi222/LovePet-Android/releases/latest)
 2. 点「显示桌宠」并授予浮窗权限。单指拖动，双指缩放。
 3. 完整角色包点腿部开菜单。第三方 LPK、WPK 保留可识别的包内触控，可在设置中开启右下角三点菜单。可从应用或桌宠通知退出。
 
