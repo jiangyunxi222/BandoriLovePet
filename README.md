@@ -46,7 +46,7 @@ LovePet 1.0.0 沿用 Windows 独立版的安装目录和用户数据。此前 Wi
 | 普通 Live2D 模型 JSON | 选择 `*.model.json` / `*.model3.json`，保留相对路径 | 请选兼容的 LPK / WPK |
 | LPK / WPK | 预览、桌宠与壁纸，支持包内动作等触控 | 预览、桌宠与壁纸，支持包内动作等触控 |
 
-角色 ZIP 请从发布页的 **Assets** 下载。第三方 ZIP 在 Windows 上需先解压，再选择模型 JSON。Android 角色包协议见 [Android 导入说明](https://github.com/jiangyunxi222/BandoriLovePet/blob/feature/android-apk/android/README.md)。
+角色 ZIP 请从发布页的 **Assets** 下载。第三方 ZIP 在 Windows 上需先解压，再选择模型 JSON。Android 角色包协议见 [Android 导入说明](https://github.com/jiangyunxi222/LovePet-Android#lovepet-android)。
 
 创意工坊 LPK 如需 `config.json`，请把对应配置放在同目录。普通 Cubism 3 及以上模型首次导入需联网获取官方运行库。经典 Cubism 2 需先导入一次完整角色发行包。
 
@@ -71,7 +71,7 @@ python -m pip install pyinstaller
 pwsh -File .\build.ps1 -ElectronDirectory "D:\electron-win32-x64" -ResourceEditor "D:\rcedit-x64.exe" -InnoSetupCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
-Windows 输出为 `dist/BandoriLovePet-Setup.exe`。Android 构建见 [Android 分支说明](https://github.com/jiangyunxi222/BandoriLovePet/blob/feature/android-apk/android/README.md)。第三方组件见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
+Windows 输出为 `dist/BandoriLovePet-Setup.exe`。Android 源码与构建说明位于 [LovePet-Android 仓库](https://github.com/jiangyunxi222/LovePet-Android)。第三方组件见 [THIRD_PARTY_NOTICES.txt](panel/THIRD_PARTY_NOTICES.txt)。
 
 使用已安装在当前用户证书库中的可信代码签名证书时，为构建命令追加 `-SignTool <signtool.exe 路径> -CodeSigningThumbprint <证书指纹>`。脚本会签名应用、辅助程序、安装器和卸载器，并检查公信验证结果。
 
