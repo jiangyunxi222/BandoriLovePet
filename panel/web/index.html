@@ -10,12 +10,15 @@
     if (window.desktopPet && mode.get("pet") === "1") {
       document.documentElement.dataset.desktopPet = "";
     }
+    if (window.desktopPet && !document.documentElement.matches("[data-desktop-pet], [data-wallpaper]")) {
+      document.documentElement.dataset.starting = "";
+    }
   </script>
-  <title>BandoriLove · 角色控制台</title>
+  <title>LovePet · 角色控制台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/rounded.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/sans-regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=desktop-scene-1">
+  <link rel="stylesheet" href="style.css?v=desktop-scene-2">
   <script defer src="vendor/live2dcubismcore.min.js"></script>
   <script defer src="vendor/live2d.min.js"></script>
   <script defer src="vendor/pixi.min.js"></script>
@@ -23,14 +26,16 @@
   <script defer src="performance.js?v=3"></script>
   <script defer src="theme.js"></script>
   <script defer src="viewer-interaction.js"></script>
-  <script defer src="app.js?v=desktop-scene-1"></script>
-  <script defer src="scene.js"></script>
+  <script defer src="rotation-gestures.js"></script>
+  <script defer src="app.js?v=desktop-scene-2"></script>
+  <script defer src="scene.js?v=2"></script>
   <script defer src="library.js"></script>
 </head>
 <body>
+  <div id="startup-cover" aria-hidden="true"><img src="favicon.svg" alt=""><span>LovePet</span></div>
   <main class="workspace">
     <header class="topbar">
-      <a class="brand" href="/" aria-label="角色菜单首页"><img class="brand-mark" src="favicon.svg" alt=""><span>BandoriLove</span></a>
+      <a class="brand" href="/" aria-label="角色菜单首页"><img class="brand-mark" src="favicon.svg" alt=""><span>LovePet</span></a>
       <div class="breadcrumb"><span id="game-name">OurNotes</span><span class="slash">/</span><span id="band-name">MyGO!!!!!</span></div>
       <button id="exit-preview" class="subtle-button" hidden>退出控制台</button>
       <input id="role-zip" type="file" accept=".zip,application/zip" hidden>
@@ -156,7 +161,7 @@
       </details>
       <details id="scene-stack-section" class="scene-section" open>
       <summary>图层排序</summary>
-      <p class="scene-gesture-hint">选中图层后，拖动图层 · 滚轮缩放</p>
+      <p class="scene-gesture-hint">拖动定位，滚轮缩放。Alt + 滚轮旋转，Alt + 双击复位。触屏支持三指旋转和三指双击。</p>
       <ol id="scene-stack"></ol>
       </details>
       <details id="scene-adjust-section" class="scene-section">
@@ -166,6 +171,7 @@
         <p id="scene-base-note" hidden>原来的角色背景固定保留在底层。添加图片或视频即可覆盖，删除后自动恢复。</p>
         <label id="scene-opacity-row">透明度<input id="scene-opacity" type="range" min="0" max="100"><output id="scene-opacity-value"></output></label>
         <label id="scene-scale-row">大小<input id="scene-scale" type="range" min="30" max="300"><output id="scene-scale-value"></output></label>
+        <label id="scene-rotation-row">旋转<input id="scene-rotation" type="range" min="-180" max="180" step="1"><output id="scene-rotation-value"></output></label>
         <div class="scene-position">
           <label>左右<input id="scene-x" type="range" min="-80" max="80"></label>
           <label>上下<input id="scene-y" type="range" min="-80" max="80"></label>
@@ -181,15 +187,22 @@
       </details>
       <p id="scene-message" role="status" hidden></p>
       </div>
-      <button id="scene-apply" class="primary-button">完成并预览</button>
+      <button id="scene-apply" class="primary-button">应用壁纸</button>
     </div>
   </section>
   <button id="pet-menu-button" aria-label="桌宠菜单" hidden>⋯</button>
   <div id="pet-menu" aria-label="角色菜单" hidden>
     <button data-menu="panel">打开面板</button>
-    <button data-menu="action">循环动作</button><button data-menu="voice">循环语音</button><button data-menu="costume">循环换装</button>
+    <button data-menu="action">循环动作</button><button data-menu="expression">循环表情</button><button data-menu="voice">循环语音</button><button data-menu="costume">循环换装</button>
     <button data-menu="reset">恢复待机</button><button data-menu="stop">退出桌宠</button><button data-menu="close">关闭菜单</button>
   </div>
+  <dialog id="wallpaper-result" class="voice-dialog" aria-labelledby="wallpaper-result-title">
+    <form method="dialog">
+      <div class="dialog-heading"><h2 id="wallpaper-result-title"></h2></div>
+      <p id="wallpaper-result-message"></p>
+      <div class="performance-actions"><button class="primary-button" autofocus>确定</button></div>
+    </form>
+  </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <dialog id="theme-settings" class="voice-dialog" aria-labelledby="theme-title">
     <div class="dialog-heading theme-heading"><h2 id="theme-title">主题配色</h2><button id="theme-close" class="dialog-close" type="button" aria-label="关闭主题配色" autofocus>×</button></div>

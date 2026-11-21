@@ -5,12 +5,12 @@
   #define InstallId "BandoriLovePet.Standalone"
 #endif
 #ifndef ShortcutName
-  #define ShortcutName "BandoriLovePet 1.0"
+  #define ShortcutName "LovePet"
 #endif
 
 [Setup]
 AppId={#InstallId}
-AppName=BandoriLovePet
+AppName=LovePet
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppVersion}
 AppPublisher=BandoriLove
@@ -23,7 +23,7 @@ CloseApplicationsFilter=*.exe,*.dll
 RestartApplications=no
 SetupIconFile=panel\ControlPanel.ico
 UninstallDisplayIcon={app}\BandoriLovePet.exe
-UninstallDisplayName=BandoriLovePet
+UninstallDisplayName=LovePet
 OutputDir=dist
 OutputBaseFilename=BandoriLovePet-Setup
 Compression=lzma2/fast
@@ -52,4 +52,4 @@ Name: "{userprograms}\{#ShortcutName}"; Filename: "{app}\BandoriLovePet.exe"; Wo
 Name: "{userdesktop}\{#ShortcutName}"; Filename: "{app}\BandoriLovePet.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\BandoriLovePet.exe"; Description: "{cm:LaunchProgram,BandoriLovePet}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\BandoriLovePet.exe"; Description: "{cm:LaunchProgram,LovePet}"; Flags: nowait postinstall skipifsilent

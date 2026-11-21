@@ -1633,4 +1633,68 @@ html[data-theme]:not([data-desktop-pet]):not([data-wallpaper]) { background: var
 }
 .performance-add:is(:hover, :focus-visible) { border-color: var(--theme-accent); }
 
+#startup-cover { display: none; }
+[data-starting] #startup-cover {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 16px;
+  background: #faf6f9;
+  color: #47364a;
+  font-size: 26px;
+  font-weight: 650;
+}
+#startup-cover img { width: 76px; height: 76px; }
+
+#wallpaper-result { width: min(24rem, calc(100% - 32px)); }
+#wallpaper-result-message { margin: 16px 0 20px; }
+
+:is(.scene-edit, .immersive-preview, [data-desktop-pet]) #canvas-host { touch-action: none; }
+
+:root:not([data-desktop-pet], [data-wallpaper], .scene-edit, .immersive-preview) .studio-layout {
+  grid-template-columns: minmax(0, .87fr) minmax(0, 1.13fr);
+}
+.studio-layout > *, .list-toolbar > *, .scene-sheet > * { min-width: 0; }
+.items:is(.action-grid, .expression-grid, .costume-grid) {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 120px), 1fr));
+}
+
+@media (max-width: 1050px) {
+  .topbar .breadcrumb { display: none; }
+}
+@media (max-width: 820px) {
+  :root:not([data-desktop-pet], [data-wallpaper], .scene-edit, .immersive-preview) .studio-layout {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+  :root:not([data-desktop-pet], [data-wallpaper], .scene-edit, .immersive-preview) .stage {
+    flex: none;
+    min-height: 0;
+    height: clamp(240px, 54dvh, 440px);
+  }
+  .control-panel { min-height: 330px; height: clamp(330px, 74dvh, 600px); max-height: none; }
+  .topbar { min-height: 0; height: auto; padding: 10px 16px; flex-wrap: wrap; gap: 8px 16px; }
+  .desktop-controls { flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .desktop-controls .connection { padding-inline: 10px; }
+}
+@media (max-width: 660px) {
+  .desktop-controls { flex: 1 0 100%; margin-left: 0; }
+  .control-panel { padding-inline: 14px; }
+  .loop-options { flex-wrap: wrap; gap: 10px; }
+}
+@media (min-width: 900px) {
+  .scene-sheet {
+    inset: 68px 14px 14px auto;
+    width: clamp(310px, 34vw, 420px);
+    max-height: none;
+    margin: 0;
+  }
+}
+
 [data-render-only] #settings .setting-switch:has(:is(#body-toggle, #click-through-toggle)) { display: none; }

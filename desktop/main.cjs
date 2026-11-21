@@ -5,6 +5,7 @@ const { createInterface } = require("node:readline");
 const { readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { setTimeout: delay } = require("node:timers/promises");
 const path = require("node:path");
+const appName = app.getName();
 
 const home = path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BandoriLovePet");
 const bundled = process.env.BANDORILOVE_PET_BUNDLE || path.join(process.resourcesPath, "panel");
@@ -38,6 +39,7 @@ function savePetBounds() {
   clearTimeout(saveBoundsTimer);
   if (!petScene) return;
   preferences.bounds = petBounds();
+  preferences.rotation = petScene.rotation;
   save();
 }
 
@@ -59,7 +61,7 @@ function showManager() {
   if (!manager || manager.isDestroyed()) {
     manager = new BrowserWindow({
       width: 1050, height: 750, minWidth: 600, minHeight: 440,
-      title: "BandoriLovePet", autoHideMenuBar: true,
+      title: appName, autoHideMenuBar: true,
       icon: path.join(bundled, "ControlPanel.ico"), webPreferences: windowOptions,
     });
     guardNavigation(manager, () => ownPort);
@@ -82,24 +84,29 @@ function applyPetLayer() {
   windowCommand(preferences.layer);
 }
 
+function defaultPetBounds(area) {
+  return { x: area.x + area.width - 365, y: area.y + area.height - 490, width: 350, height: defaultPetHeight };
+}
+
 function showPet() {
   if (pet && !pet.isDestroyed()) return;
   if (!pet || pet.isDestroyed()) {
     const primary = screen.getPrimaryDisplay();
     const { workArea: area } = primary;
-    const bounds = preferences.bounds ?? { x: area.x + area.width - 365, y: area.y + area.height - 490, width: 350, height: defaultPetHeight };
+    const bounds = preferences.bounds ?? defaultPetBounds(area);
     const display = screen.getDisplayMatching(bounds);
     petScene = {
       display,
       x: bounds.x + bounds.width / 2,
       y: bounds.y + bounds.height,
       height: Math.min(maximumPetHeight(display.workArea), Math.max(180, bounds.height)),
+      rotation: Number.isFinite(preferences.rotation) ? preferences.rotation % 360 : 0,
     };
     petScene.surface = petViewportBounds();
     pet = new BrowserWindow({
       ...petScene.surface, show: false, transparent: true, frame: false, resizable: false,
       backgroundColor: "#00000000",
-      title: "BandoriLovePet 桌宠角色", focusable: false, skipTaskbar: true, hasShadow: false,
+      title: `${appName} 桌宠角色`, focusable: false, skipTaskbar: true, hasShadow: false,
       alwaysOnTop: preferences.layer === "top",
       webPreferences: windowOptions,
     });
@@ -226,6 +233,7 @@ function petFrame() {
   return {
     x: x - surface.x, y: y - surface.y, width, height,
     originX: surface.x, originY: surface.y, surfaceWidth: surface.width, surfaceHeight: surface.height,
+    rotation: petScene.rotation,
   };
 }
 
@@ -320,7 +328,7 @@ function showWallpaper() {
   const display = screen.getPrimaryDisplay();
   const win = new BrowserWindow({
     ...display.bounds, show: false, frame: false, focusable: false, skipTaskbar: true, resizable: false,
-    backgroundColor: "#fbf5f9", opacity: 0, title: "BandoriLovePet 壁纸", webPreferences: windowOptions,
+    backgroundColor: "#fbf5f9", opacity: 0, title: `${appName} 壁纸`, webPreferences: windowOptions,
   });
   wallpaper = win;
   guardNavigation(win, () => ownPort);
@@ -350,12 +358,23 @@ function showWallpaper() {
   return win.ready;
 }
 
-function attachWallpaper(win) {
-  if (win !== wallpaper || wallpaperProcess) return;
+function wallpaperBounds() {
   const display = screen.getPrimaryDisplay();
   const { x, y } = screen.dipToScreenPoint(display.bounds);
   const width = Math.round(display.bounds.width * display.scaleFactor);
   const height = Math.round(display.bounds.height * display.scaleFactor);
+  return { x, y, width, height };
+}
+
+function fitWallpaperDisplay() {
+  if (!wallpaper?.attached || !wallpaperProcess?.stdin.writable) return;
+  const { x, y, width, height } = wallpaper.deviceBounds = wallpaperBounds();
+  wallpaperProcess.stdin.write(`bounds ${x} ${y} ${width} ${height}\n`);
+}
+
+function attachWallpaper(win) {
+  if (win !== wallpaper || wallpaperProcess) return;
+  const { x, y, width, height } = win.deviceBounds = wallpaperBounds();
   win.showInactive();
   const host = spawn(path.join(bundled, "WallpaperHost.exe"), [
     win.getNativeWindowHandle().readBigUInt64LE().toString(), process.pid, x, y, width, height,
@@ -372,6 +391,7 @@ function attachWallpaper(win) {
     if (win !== wallpaper || win.isDestroyed()) return;
     if (line === "ready") {
       win.attached = true;
+      fitWallpaperDisplay();
       publishDesktopState().then(() => win.resolveReady(true), win.rejectReady);
       return;
     }
@@ -382,17 +402,33 @@ function attachWallpaper(win) {
     }
     const [action, rawX, rawY] = line.split(" ");
     if (!["down", "move", "up", "cancel"].includes(action)) return;
-    win.webContents.send("wallpaper:pointer", { action, x: Number(rawX) / width, y: Number(rawY) / height });
+    win.webContents.send("wallpaper:pointer", {
+      action, x: Number(rawX) / win.deviceBounds.width, y: Number(rawY) / win.deviceBounds.height,
+    });
   });
 }
 
-async function toggleWallpaper() {
+let wallpaperToggle;
+function toggleWallpaper() {
+  wallpaperToggle ??= changeWallpaper().finally(() => { wallpaperToggle = null; });
+  return wallpaperToggle;
+}
+
+async function changeWallpaper() {
   if (wallpaper) {
-    wallpaper.close();
+    const current = wallpaper;
+    await new Promise(resolve => {
+      current.once("closed", resolve);
+      current.close();
+    });
+    await desktopUpdates;
+    if (!wallpaper) manager?.webContents.send("wallpaper:result", false);
     return false;
   }
   if (!(await panelState(ownPort)).role) throw new Error("请先导入一个模型");
-  return showWallpaper();
+  const applied = await showWallpaper();
+  if (wallpaper?.attached) manager?.webContents.send("wallpaper:result", true);
+  return applied;
 }
 
 async function togglePet() {
@@ -448,7 +484,9 @@ function installHandlers() {
   });
   ipcMain.on("desktop:stop", (event) => {
     if (event.sender === pet?.webContents) pet.close();
-    if (event.sender === wallpaper?.webContents) wallpaper.close();
+    if (event.sender === wallpaper?.webContents) void toggleWallpaper().catch(error => {
+      dialog.showErrorBox(appName, error.message);
+    });
   });
   ipcMain.handle("pet:toggle", (event) => event.sender === manager?.webContents && togglePet());
   ipcMain.handle("wallpaper:toggle", (event) => event.sender === manager?.webContents && toggleWallpaper());
@@ -500,14 +538,14 @@ function installHandlers() {
   ipcMain.on("pet:hit", (event, hit) => {
     if (event.sender === pet?.webContents) pet.setIgnoreMouseEvents(hit !== true);
   });
-  ipcMain.on("pet:drag", (event, operation) => {
+  ipcMain.on("pet:drag", (event, operation, x, y, touch) => {
     if (event.sender !== pet?.webContents || !petScene) return;
     if (operation === "end") {
       finishPetDrag();
       return;
     }
     if (!["begin", "move"].includes(operation)) return;
-    const point = screen.getCursorScreenPoint();
+    const point = touch === true && Number.isFinite(x) && Number.isFinite(y) ? { x, y } : screen.getCursorScreenPoint();
     if (operation === "begin") {
       const bounds = petBounds();
       petDrag = {
@@ -521,6 +559,23 @@ function installHandlers() {
     if (event.sender !== pet?.webContents || !petScene || !Number.isFinite(steps)) return;
     const factor = 1.12 ** Math.max(-3, Math.min(3, steps));
     setPetHeight(petScene.height * factor, true);
+  });
+  ipcMain.on("pet:pinch", (event, height) => {
+    if (event.sender === pet?.webContents && Number.isFinite(height)) setPetHeight(height, false);
+  });
+  ipcMain.on("pet:transform", (event, rotation, reset) => {
+    if (event.sender !== pet?.webContents || !petScene || !Number.isFinite(rotation)) return;
+    finishPetDrag();
+    petScene.rotation = reset === true ? 0 : rotation % 360;
+    if (reset === true) {
+      const area = petScene.display.workArea;
+      const bounds = defaultPetBounds(area);
+      petScene.height = Math.min(maximumPetHeight(area), bounds.height);
+      petScene.x = bounds.x + bounds.width / 2;
+      petScene.y = bounds.y + bounds.height;
+      fitPetSurface();
+    } else sendPetFrame();
+    scheduleBoundsSave();
   });
   ipcMain.handle("pet:frame", (event) => event.sender === pet?.webContents && petScene ? petFrame() : null);
   ipcMain.handle("tray:state", (event) => {
@@ -549,10 +604,10 @@ function installHandlers() {
       case "open": showManager(); break;
       case "import": showManager(); break;
       case "toggle-pet":
-        togglePet().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
+        togglePet().catch(error => dialog.showErrorBox(appName, error.message));
         break;
       case "toggle-wallpaper":
-        toggleWallpaper().catch(error => dialog.showErrorBox("BandoriLovePet", error.message));
+        toggleWallpaper().catch(error => dialog.showErrorBox(appName, error.message));
         break;
       case "top":
       case "bottom":
@@ -592,16 +647,18 @@ async function start() {
   }
   if (!ownPort) throw new Error("本地控制台未启动");
   installHandlers();
-  const updatePetDisplay = () => {
+  const updateDesktopDisplays = () => {
+    fitWallpaperDisplay();
     if (!petScene) return;
     usePetDisplay(screen.getDisplayMatching(petBounds()));
     fitPetSurface();
     scheduleBoundsSave();
   };
-  screen.on("display-metrics-changed", updatePetDisplay);
-  screen.on("display-removed", updatePetDisplay);
+  screen.on("display-metrics-changed", updateDesktopDisplays);
+  screen.on("display-added", updateDesktopDisplays);
+  screen.on("display-removed", updateDesktopDisplays);
   tray = new Tray(nativeImage.createFromPath(path.join(bundled, "ControlPanel.ico")));
-  tray.setToolTip("BandoriLovePet");
+  tray.setToolTip(appName);
   tray.on("right-click", (_event, bounds) => showTrayMenu(bounds));
   tray.on("click", () => { trayMenu?.close(); showManager(); });
   try {
@@ -630,7 +687,7 @@ else {
     }).catch(() => backend?.kill()).finally(() => app.quit());
   });
   app.whenReady().then(start).catch((error) => {
-    dialog.showErrorBox("BandoriLovePet", error.message);
+    dialog.showErrorBox(appName, error.message);
     app.quit();
   });
 }

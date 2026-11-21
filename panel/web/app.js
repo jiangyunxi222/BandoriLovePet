@@ -2,6 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const labels = { action: "动作", expression: "表情", costume: "衣装", voice: "语音", favorites: "收藏" };
+const loopKinds = ["action", "expression", "voice", "costume"];
 const directions = { body: "正面动作", left: "左向动作", right: "右向动作", other: "其他动作" };
 const view = {
   catalog: null, state: null, tab: "action", importRevision: 0,
@@ -53,6 +54,12 @@ function toast(message) {
   $("#toast").textContent = message;
   $("#toast").classList.add("visible");
   toastTimer = setTimeout(() => $("#toast").classList.remove("visible"), 3300);
+}
+
+function showWallpaperResult(applied) {
+  $("#wallpaper-result-title").textContent = applied ? "壁纸已应用" : "壁纸已退出";
+  $("#wallpaper-result-message").textContent = applied ? "已设为主屏幕壁纸。" : "已恢复桌面的原壁纸。";
+  if (!$("#wallpaper-result").open) $("#wallpaper-result").showModal();
 }
 
 async function api(path, data) {
@@ -255,7 +262,7 @@ function refreshCards(entries, favorites) {
 
 function renderItems() {
   if (!view.catalog || !view.state) return;
-  const hasLoop = ["action", "voice", "costume"].includes(view.tab);
+  const hasLoop = loopKinds.includes(view.tab);
   if (hasLoop) view.onlyFavorites = Boolean(preferenceValue(view.tab + "Scope"));
   const favorites = favoriteSet();
   let entries;
@@ -300,16 +307,18 @@ function renderItems() {
   const looping = Boolean(view.state.looping[view.tab]);
   $("#loop").classList.toggle("active", looping);
   $("#loop").setAttribute("aria-pressed", String(looping));
-  $("#loop-label").textContent = looping ? "停止循环" : view.tab === "costume" ? "循环换装" : "循环播放";
+  const performanceLoop = view.tab === "action" && Boolean(preferenceValue("performanceEnabled"));
+  $("#loop-label").textContent = looping ? "停止循环" : performanceLoop ? "循环演出" : view.tab === "costume" ? "循环换装" : "循环播放";
   const order = preferenceValue(view.tab + "Order") || "random";
   document.querySelectorAll("[data-order]").forEach((button) => {
     button.classList.toggle("selected", button.dataset.order === order);
     button.setAttribute("aria-pressed", String(button.dataset.order === order));
   });
   if (document.activeElement !== $("#loop-interval")) $("#loop-interval").value = preferenceValue(view.tab + "Interval") ?? 0;
-  $("#loop-interval").min = view.tab === "costume" ? "1" : "0";
-  $("#interval-label").textContent = view.tab === "costume" ? "每套停留" : "结束后等待";
-  const playable = itemList(view.tab).some((item) => !scope || favorites.has(item.flag));
+  $("#loop-interval").min = ["costume", "expression"].includes(view.tab) ? "1" : "0";
+  $("#interval-label").textContent = view.tab === "costume" ? "每套停留" : view.tab === "expression" ? "每个表情停留" : "结束后等待";
+  const playable = performanceLoop ? outfitPerformances(view.state.settings.performanceGroups[currentCostume().flag]).length > 0
+    : itemList(view.tab).some((item) => !scope || favorites.has(item.flag));
   $("#loop").disabled = !playable && !looping;
 }
 
@@ -329,7 +338,7 @@ function renderState() {
   $("#touch-menu").closest("label").title = renderOnly ? "从右下角三点打开菜单" : "点击角色腿部打开菜单";
   if (!menuEnabled && !$("#pet-menu").hidden) showPetMenu(false);
   updateThirdPartyMenuButton();
-  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · BandoriLovePet";
+  document.title = view.catalog.name.replace(/（Garupa）/g, "") + " · LovePet";
   const settings = view.state.settings;
   $("#captions-toggle").checked = Boolean(settings.captions);
   if (renderOnly) { updateSubtitle(); return; }
@@ -402,10 +411,24 @@ function resetModelView() {
   }
   const scene = view.wallpaper || document.documentElement.matches(".scene-edit, .immersive-preview");
   const layer = scene ? view.sceneCharacter : null;
-  const scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height) * (layer?.scale ?? 1);
+  const angle = view.petWindow ? view.petRotation ?? 0 : layer?.rotation ?? 0;
+  const radians = angle * Math.PI / 180;
+  const sin = Math.sin(radians), cos = Math.cos(radians);
+  const zoom = layer?.scale ?? 1;
+  let scale = Math.min(width * .9 / modelSize.width, height * .94 / modelSize.height) * zoom;
+  let offset = height * .48 * zoom;
+  if (view.petWindow && angle) {
+    const modelWidth = scale * modelSize.width, modelHeight = scale * modelSize.height;
+    const fit = Math.min(1, width * .98 / (Math.abs(cos) * modelWidth + Math.abs(sin) * modelHeight),
+      height * .98 / (Math.abs(sin) * modelWidth + Math.abs(cos) * modelHeight));
+    scale *= fit;
+    offset *= fit;
+  }
   model.scale.set(scale);
   model.anchor.set(.5, 1);
-  model.position.set(x + width * (.5 + (layer?.x ?? 0)), y + height * (.5 + .48 * (layer?.scale ?? 1) + (layer?.y ?? 0)));
+  model.angle = angle;
+  model.position.set(x + width * (.5 + (layer?.x ?? 0)) - sin * offset,
+    y + height * (.5 + (layer?.y ?? 0)) + cos * offset);
   if (view.petWindow) {
     const style = host.parentElement.style;
     style.setProperty("--pet-left", `${x}px`);
@@ -467,9 +490,10 @@ function showPetMenu(show = $("#pet-menu").hidden) {
   $("#pet-menu-button").hidden = true;
   for (const button of menu.querySelectorAll("[data-menu]")) {
     const action = button.dataset.menu;
-    const loop = ["action", "voice", "costume"].includes(action);
+    const loop = loopKinds.includes(action);
     button.hidden = view.catalog?.renderOnly && (loop || action === "reset");
-    if (loop) button.textContent = (view.state.looping[action] ? "停止循环" : "循环") + labels[action === "costume" ? "costume" : action];
+    if (loop) button.textContent = (view.state.looping[action] ? "停止循环" : "循环") +
+      (action === "action" && view.state.settings.performanceEnabled ? "演出" : action === "costume" ? "换装" : labels[action]);
     if (action === "stop") button.textContent = view.wallpaper ? "退出壁纸" : "退出桌宠";
   }
   if (show) placePetMenu();
@@ -484,7 +508,7 @@ $("#pet-menu").onclick = safely(async (event) => {
   if (action === "panel") window.desktopPet.showPanel();
   else if (action === "stop") window.desktopPet.stopDisplay();
   else if (action === "reset") await stopAll();
-  else if (["action", "voice", "costume"].includes(action)) {
+  else if (loopKinds.includes(action)) {
     if (view.state.looping[action]) await api("stop", { kind: action });
     else await api("operate", { kind: action, loop: true, random: true });
   }
@@ -665,6 +689,7 @@ async function loadModel(key, keepCurrent = false) {
     }
     const outgoing = view.app.stage.removeChildren();
     view.model = model;
+    view.modelCostumeId = costume.id;
     view.viewerCostume = packed;
     const { width, height } = model.getLocalBounds();
     view.modelSize = { width, height };
@@ -707,7 +732,7 @@ async function loadModel(key, keepCurrent = false) {
       const x = event.clientX - rectangle.left;
       const y = event.clientY - rectangle.top;
       const frame = view.sizePreview;
-      if (frame && (x < frame.x || x > frame.x + frame.width || y < frame.y || y > frame.y + frame.height)) return;
+      if (frame && !view.petRotation && (x < frame.x || x > frame.x + frame.width || y < frame.y || y > frame.y + frame.height)) return;
       if (packed) return packed.hit(view.model, x, y);
       const point = view.model.toModelPosition(new PIXI.Point(x, y));
       const internal = view.model.internalModel;
@@ -730,7 +755,7 @@ async function loadModel(key, keepCurrent = false) {
       };
       const cursor = (point) => {
         const { gl } = view.app.renderer;
-        if (drag || subtitleDrag.dragging || performance.now() < zoomActiveUntil ||
+        if (drag || view.petRotationGesture || subtitleDrag.dragging || performance.now() < zoomActiveUntil ||
             [$("#pet-menu"), $("#pet-menu-button")].some(node => !node.hidden && rectContains(node.getBoundingClientRect(), point))) return setHit(true);
         if (!point || !view.model || !gl) {
           previousPoint = undefined;
@@ -756,10 +781,10 @@ async function loadModel(key, keepCurrent = false) {
       view.stopPetCursor?.();
       view.stopPetCursor = window.desktopPet.watchCursor(cursor);
       host.onpointerdown = (event) => {
-        if (event.button !== 0) return;
+        if (!event.isPrimary || event.altKey || event.button !== 0) return;
         suppressClick = false;
-        drag = { x: event.screenX, y: event.screenY };
-        window.desktopPet.drag("begin", Math.round(drag.x), Math.round(drag.y));
+        drag = { x: event.screenX, y: event.screenY, touch: event.pointerType === "touch" };
+        window.desktopPet.drag("begin", Math.round(drag.x), Math.round(drag.y), drag.touch);
       };
       const track = host.onpointermove;
       host.onpointermove = (event) => {
@@ -769,13 +794,14 @@ async function loadModel(key, keepCurrent = false) {
         if (!suppressClick && Math.hypot(dx, dy) < 4) return;
         if (!suppressClick) host.setPointerCapture(event.pointerId);
         suppressClick = true;
-        window.desktopPet.drag("move", Math.round(event.screenX), Math.round(event.screenY));
+        window.desktopPet.drag("move", Math.round(event.screenX), Math.round(event.screenY), drag.touch);
       };
       const endDrag = () => {
         if (!drag) return;
         drag = null;
         window.desktopPet.drag("end");
       };
+      view.endPetDrag = endDrag;
       host.onpointerup = host.onpointercancel = host.onlostpointercapture = endDrag;
       host.onpointerleave = () => {
         if (!suppressClick) endDrag();
@@ -1024,6 +1050,8 @@ async function chooseCostume(id) {
 async function applyPlay(data) {
   const { kind, item } = data;
   if (data.costume !== undefined && data.costume !== currentCostume().id) return;
+  await view.modelReady;
+  if (data.costume !== undefined && (data.costume !== currentCostume().id || data.costume !== view.modelCostumeId)) return;
   if (kind === "voice") {
     const generation = ++audioGeneration;
     audio.pause();
@@ -1088,7 +1116,7 @@ function stopLocal(kind) {
     view.currentAction = null;
     const manager = view.model?.internalModel.motionManager;
     manager?.stopAllMotions();
-  }
+  } else if (kind === "expression") resetExpression();
   updatePlaying();
   if (view.catalog) renderItems();
 }
@@ -1157,7 +1185,7 @@ function updateSubtitle() {
 function updatePlaying() {
   const item = view.visibleVoice || view.currentAction || (view.state?.looping.costume ? currentCostume() : null);
   $("#playing-title").textContent = item?.name || "待机";
-  $("#playing-detail").textContent = item ? (view.visibleVoice ? "语音播放中" : view.currentAction ? "动作播放中" : view.state.waitingForCostume ? "等待换装" : "循环换装中") : "";
+  $("#playing-detail").textContent = item ? (view.visibleVoice ? "语音播放中" : view.currentAction ? "动作播放中" : "循环换装中") : "";
   $("#equalizer").classList.toggle("playing", Boolean(item));
 }
 
@@ -1170,12 +1198,13 @@ async function stopAll() {
 
 async function boot() {
   if (window.desktopPet) {
-    document.title = "BandoriLovePet";
-    $(".brand span").textContent = "BandoriLovePet";
+    document.title = "LovePet";
+    $(".brand span").textContent = "LovePet";
   }
   if (view.petWindow && window.desktopPet.getFrame) {
     const frame = await window.desktopPet.getFrame();
     view.sizePreview ??= frame;
+    view.petRotation = view.sizePreview?.rotation ?? 0;
   }
   view.standalone = true;
   view.state = await api("state");
@@ -1214,7 +1243,11 @@ function watchRoleEvents() {
     if (view.events !== events) return;
     const event = JSON.parse(message.data);
     if (event.state.role !== view.state?.role && event.type !== "selection") return;
-    if (event.state.sequence < view.state.sequence) return;
+    if (event.state.sequence < view.state.sequence) {
+      if (event.type === "selection" && !view.switchingCostume &&
+          event.state.settings.costume === view.state.settings.costume) await applySelection(view.state);
+      return;
+    }
     view.state = event.state;
     if (event.type === "selection") {
       if (!view.switchingCostume || event.state.settings.costume === view.desiredCostume) await applySelection(event.state);
@@ -1227,7 +1260,7 @@ function watchRoleEvents() {
     else if (event.type === "scene") window.sceneLayers?.receive(event.data);
     else if (event.type === "stop" || (event.type === "ended" && event.data !== "voice")) stopLocal(event.data);
     else if (event.type === "clear-expression") resetExpression();
-    else if (event.type === "reset") { for (const kind of ["action", "voice", "costume"]) stopLocal(kind); resetExpression(); }
+    else if (event.type === "reset") { for (const kind of loopKinds) stopLocal(kind); }
     else if (event.type === "notice") toast(event.data);
     renderState();
   };
@@ -1328,7 +1361,7 @@ document.querySelectorAll(".voice-dialog").forEach(dialog => dialog.addEventList
 }));
 $("#items").addEventListener("scroll", queueVisibleThumbnails, { passive: true });
 $("#favorites-filter").addEventListener("click", safely(async () => {
-  if (["action", "voice", "costume"].includes(view.tab)) {
+  if (loopKinds.includes(view.tab)) {
     await savePreference(view.tab + "Scope", view.onlyFavorites ? 0 : 1);
   } else { view.onlyFavorites = !view.onlyFavorites; renderItems(); }
 }));
@@ -1413,6 +1446,23 @@ audio.addEventListener("ended", () => { view.visibleVoice = null; updateSubtitle
 audio.addEventListener("error", () => { if (audio.src) toast("语音载入失败，请重试"); });
 const canvasHost = $("#canvas-host");
 if (view.petWindow) {
+  bindRotationGestures(canvasHost, {
+    target: () => view.model && canvasHost,
+    readAngle: () => view.petRotation ?? 0,
+    rotate: (_host, angle) => { view.petRotation = angle; resetModelView(); },
+    reset: () => {
+      view.petRotation = 0;
+      resetModelView();
+      window.desktopPet.transform(0, true);
+    },
+    start: () => { view.petRotationGesture = true; view.endPetDrag?.(); },
+    readHeight: () => view.sizePreview?.height,
+    pinch: height => window.desktopPet.pinch(height),
+    finish: rotated => {
+      view.petRotationGesture = false;
+      if (rotated) window.desktopPet.transform(view.petRotation, false);
+    },
+  });
   let nextFrame, animate, pendingSizeFrame;
   const dimensions = ["x", "y", "width", "height"];
   function scheduleDraw() {
@@ -1427,6 +1477,7 @@ if (view.petWindow) {
       view.sizePreview?.surfaceHeight !== target.surfaceHeight;
     if (viewportChanged && target.surfaceWidth != null && (Math.abs(canvasHost.clientWidth - target.surfaceWidth) > 6 ||
         Math.abs(canvasHost.clientHeight - target.surfaceHeight) > 6)) return;
+    if (target.rotation !== view.sizePreview?.rotation && !view.petRotationGesture) view.petRotation = target.rotation ?? 0;
     const previous = view.sizePreview && {
       ...view.sizePreview,
       x: view.sizePreview.x + (view.sizePreview.originX ?? 0) - (target.originX ?? 0),
@@ -1456,4 +1507,10 @@ if (view.petWindow) {
 }
 new ResizeObserver(updateTabIndicator).observe($(".tabs"));
 document.fonts.ready.then(updateTabIndicator);
-boot().catch((error) => toast(error.message));
+window.desktopPet?.watchWallpaperResult?.((applied) => {
+  if (!document.hidden) showWallpaperResult(applied);
+});
+boot().catch((error) => toast(error.message)).finally(() => {
+  if (!document.documentElement.hasAttribute("data-starting")) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => delete document.documentElement.dataset.starting));
+});

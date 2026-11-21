@@ -19,7 +19,8 @@ $resourceEditor = (Resolve-Path -LiteralPath $ResourceEditor).Path
 $installerCompiler = (Resolve-Path -LiteralPath $InnoSetupCompiler).Path
 $panel = (Resolve-Path -LiteralPath $PanelSource).Path
 $icon = Join-Path $panel "ControlPanel.ico"
-$version = (Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json).version
+$metadata = Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json
+$version = $metadata.version
 $signOptions = @()
 if ($SignTool -or $CodeSigningThumbprint) {
     $CodeSigningThumbprint = $CodeSigningThumbprint -replace '\s', ''
@@ -42,8 +43,9 @@ if (Test-Path -LiteralPath (Join-Path $stage "resources/app")) { throw "Use a fr
 Get-ChildItem -LiteralPath $electron | Where-Object { $_.Name -notin @("resources","PetProfile") } |
     Copy-Item -Destination $stage -Recurse
 $binary = Get-ChildItem -LiteralPath $stage -File -Filter "*.exe" | Select-Object -First 1
-Rename-Item -LiteralPath $binary.FullName -NewName "BandoriLovePet.exe"
-& $resourceEditor (Join-Path $stage "BandoriLovePet.exe") --set-icon $icon --set-file-version $version --set-product-version $version --set-version-string FileDescription "BandoriLovePet" --set-version-string ProductName "BandoriLovePet" --set-version-string OriginalFilename "BandoriLovePet.exe"
+if (!$binary) { throw 'Electron executable was not found.' }
+if ($binary.Name -ne "BandoriLovePet.exe") { Rename-Item -LiteralPath $binary.FullName -NewName "BandoriLovePet.exe" }
+& $resourceEditor (Join-Path $stage "BandoriLovePet.exe") --set-icon $icon --set-file-version $version --set-product-version $version --set-version-string FileDescription $metadata.productName --set-version-string ProductName $metadata.productName --set-version-string OriginalFilename "BandoriLovePet.exe"
 if ($LASTEXITCODE) { throw "Windows application icon update failed" }
 $resources = Join-Path $stage "resources"
 $desktop = Join-Path $resources "app"

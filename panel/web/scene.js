@@ -3,12 +3,14 @@
 (() => {
   if (view.petWindow) return;
   const { wallpaper } = view;
-  const base = () => ({ id: "background", kind: "background", name: "默认背景", color: "default", opacity: 1, visible: true, scale: 1, x: 0, y: 0 });
+  const materialPlacement = { scale: 1, x: 0, y: 0, rotation: 0 };
+  const characterPlacement = { ...materialPlacement, scale: .82, y: -.04 };
+  const base = () => ({ id: "background", kind: "background", name: "默认背景", color: "default", opacity: 1, visible: true, ...materialPlacement });
   const isBase = layer => layer.id === "background";
   const defaults = () => [
     base(),
-    { id: "character", kind: "character", name: "Live2D 角色", opacity: 1, visible: true, scale: .82, x: 0, y: -.04 },
-    { id: "sparkles", kind: "effect", name: "星光", effect: "stars", opacity: .65, visible: true, scale: 1, x: 0, y: 0 },
+    { id: "character", kind: "character", name: "Live2D 角色", opacity: 1, visible: true, ...characterPlacement },
+    { id: "sparkles", kind: "effect", name: "星光", effect: "stars", opacity: .65, visible: true, ...materialPlacement },
   ];
   const palettes = {
     default: ["原色", "radial-gradient(ellipse at 50% 82%,#eee0eb,#fbf5f9 75%)"],
@@ -37,7 +39,9 @@
     });
     // Reserve room for the character if a scene from an older build omitted the base.
     if (content.length > 11) content.splice(content.findIndex(layer => layer.kind !== "character"), 1);
-    return [base(), ...content];
+    return [base(), ...content.map(layer => ({ ...layer,
+      rotation: Number.isFinite(layer.rotation) ? wrapRotation(layer.rotation) : 0,
+    }))];
   }
   let layers = defaults();
   let selected = "character", visible = !wallpaper, engine;
@@ -78,7 +82,7 @@
       setSceneCharacterTransform(layer);
       return;
     }
-    node.style.transform = "translate(" + layer.x * 100 + "%," + layer.y * 100 + "%) scale(" + layer.scale + ")";
+    node.style.transform = "translate(" + layer.x * 100 + "%," + layer.y * 100 + "%) rotate(" + layer.rotation + "deg) scale(" + layer.scale + ")";
   }
   function particleOptions(type) {
     const particles = {
@@ -224,7 +228,9 @@
     }
     $("#scene-opacity-value").textContent = Math.round(layer.opacity * 100) + "%";
     $("#scene-scale-value").textContent = Math.round(layer.scale * 100) + "%";
-    $("#scene-scale-row").hidden = $(".scene-position").hidden = layer.kind === "background";
+    $("#scene-rotation").value = Math.round(layer.rotation);
+    $("#scene-rotation-value").textContent = Math.round(layer.rotation) + "°";
+    $("#scene-rotation-row").hidden = $("#scene-scale-row").hidden = $(".scene-position").hidden = layer.kind === "background";
     $("#scene-opacity-row").hidden = isBase(layer);
     $("#scene-base-note").hidden = !isBase(layer);
   }
@@ -291,10 +297,10 @@
     $("#scene-preview").setAttribute("aria-pressed", String(on));
     if (!on) showPetMenu(false);
   };
-  for (const name of ["opacity", "scale", "x", "y"]) {
+  for (const name of ["opacity", "scale", "x", "y", "rotation"]) {
     $("#scene-" + name).oninput = (event) => {
       if (isBase(current())) return;
-      current()[name] = Number(event.target.value) / 100;
+      current()[name] = Number(event.target.value) / (name === "rotation" ? 1 : 100);
       render(); editSelected();
     };
     $("#scene-" + name).onchange = save;
@@ -302,7 +308,7 @@
   function addEffect(effect, name) {
     if (layers.length >= 12) return message("最多可放置 12 个图层。");
     if (layers.filter(layer => layer.kind === "effect").length >= 3) return message("最多同时使用 3 层特效，减少发热与耗电。");
-    const layer = { id: identifier(), kind: "effect", effect, name, opacity: .8, visible: true, scale: 1, x: 0, y: 0 };
+    const layer = { id: identifier(), kind: "effect", effect, name, opacity: .8, visible: true, ...materialPlacement };
     layers.push(layer);
     selected = layer.id; $("#scene-choices").hidden = true; update(); message();
   }
@@ -324,20 +330,55 @@
   };
   // Keep the framebuffer size steady during gestures.
   const stage = $("#stage"), fingers = new Map();
-  let gesture;
-  function beginGesture() {
-    const points = [...fingers.values()].slice(0, 2), layer = current();
+  let gesture, dragged = false, changed = false;
+  const editing = () => document.documentElement.matches(".scene-edit:not(.scene-preview)");
+  function gestureLayer(event) {
+    if (wallpaper || !view.model || !document.documentElement.matches(".scene-edit, .immersive-preview") ||
+        event.target.closest("button, #subtitle, #pet-menu")) return;
+    const layer = document.documentElement.classList.contains("scene-edit") ? current() : layers.find(item => item.kind === "character");
+    if (!isBase(layer)) return layer;
+  }
+  function paintLayer(layer) {
+    const node = layer.kind === "character" ? $("#canvas-host") : nodes.get(layer.id);
+    if (node) applyNode(layer, node, layers.indexOf(layer));
+    if (!$("#scene-editor").hidden && layer === current()) editSelected();
+  }
+  bindRotationGestures(stage, {
+    target: gestureLayer,
+    readAngle: layer => layer.rotation,
+    rotate: (layer, angle) => { layer.rotation = angle; paintLayer(layer); },
+    reset: layer => {
+      Object.assign(layer, layer.kind === "character" ? characterPlacement : materialPlacement);
+      paintLayer(layer);
+      save();
+    },
+    start: () => {
+      fingers.clear();
+      gesture = null;
+      if (changed) save();
+      changed = false;
+    },
+    finish: rotated => { if (rotated) save(); },
+  });
+  function beginGesture(layer) {
+    const points = [...fingers.values()];
     if (!points.length) { gesture = null; return; }
     gesture = { id: layer.id, x: layer.x, y: layer.y, scale: layer.scale,
       center: points.length === 2 ? { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 } : points[0],
       distance: points.length === 2 ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) : 0 };
   }
   stage.addEventListener("pointerdown", event => {
-    if (!document.documentElement.classList.contains("scene-edit") || document.documentElement.classList.contains("scene-preview") || isBase(current())) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    event.preventDefault(); event.stopPropagation();
+    const layer = layers.find(item => item.id === gesture?.id) || gestureLayer(event);
+    if (!layer || event.altKey || event.button !== 0) return;
+    if (!fingers.size) dragged = changed = false;
+    if (fingers.size >= 2) return;
     fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    stage.setPointerCapture(event.pointerId); beginGesture();
+    beginGesture(layer);
+    if (editing() || fingers.size === 2) {
+      for (const id of fingers.keys()) stage.setPointerCapture(id);
+      event.preventDefault();
+      event.stopPropagation();
+    }
   });
   stage.addEventListener("pointermove", event => {
     if (!fingers.has(event.pointerId) || !gesture) return;
@@ -347,29 +388,42 @@
     if (!layer || isBase(layer)) return;
     const points = [...fingers.values()].slice(0, 2), bounds = stage.getBoundingClientRect();
     const center = points.length === 2 ? { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 } : points[0];
+    if (!dragged && points.length === 1 && !editing() && Math.hypot(center.x - gesture.center.x, center.y - gesture.center.y) < 5) return;
+    if (!dragged) {
+      dragged = true;
+      for (const id of fingers.keys()) stage.setPointerCapture(id);
+    }
     const distance = points.length === 2 ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) : 0;
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     layer.scale = clamp(gesture.scale * (gesture.distance > 0 ? distance / gesture.distance : 1), .3, 3);
     const ratio = layer.scale / gesture.scale;
     layer.x = clamp((center.x - bounds.left - bounds.width / 2 - (gesture.center.x - bounds.left - bounds.width / 2 - gesture.x * bounds.width) * ratio) / bounds.width, -.8, .8);
     layer.y = clamp((center.y - bounds.top - bounds.height / 2 - (gesture.center.y - bounds.top - bounds.height / 2 - gesture.y * bounds.height) * ratio) / bounds.height, -.8, .8);
-    const node = layer.kind === "character" ? $("#canvas-host") : nodes.get(layer.id);
-    if (node) applyNode(layer, node, layers.indexOf(layer));
-    editSelected();
+    changed = true;
+    paintLayer(layer);
   });
   function endGesture(event) {
+    if (event.type === "lostpointercapture" && event.target !== stage) return;
     if (!fingers.delete(event.pointerId)) return;
-    beginGesture(); save();
+    const layer = layers.find(item => item.id === gesture?.id);
+    if (layer) beginGesture(layer);
+    if (!fingers.size && changed) save();
   }
-  stage.addEventListener("pointerup", endGesture);
-  stage.addEventListener("pointercancel", endGesture);
+  window.addEventListener("pointerup", endGesture, true);
+  window.addEventListener("pointercancel", endGesture, true);
   stage.addEventListener("lostpointercapture", endGesture);
-  stage.addEventListener("wheel", event => {
-    if (!document.documentElement.matches(".scene-edit:not(.scene-preview)") || isBase(current())) return;
+  stage.addEventListener("click", (event) => {
+    if (!dragged) return;
+    dragged = false;
     event.preventDefault();
-    const layer = current();
+    event.stopImmediatePropagation();
+  }, true);
+  stage.addEventListener("wheel", event => {
+    const layer = gestureLayer(event);
+    if (!layer || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
     layer.scale = Math.min(3, Math.max(.3, layer.scale * Math.exp(-event.deltaY / 700)));
-    render(); editSelected(); save();
+    paintLayer(layer); save();
   }, { passive: false });
   for (const type of ["image", "video"]) {
     const picker = $("#scene-" + type + "-file");
@@ -392,7 +446,7 @@
       const upload = await result.json();
       if (!result.ok) throw new Error(upload.error);
       const layer = { id, media: upload.media, kind: file.type.startsWith("video/") ? "video" : "image",
-        name: file.name, opacity: 1, visible: true, scale: 1, x: 0, y: 0 };
+        name: file.name, opacity: 1, visible: true, ...materialPlacement };
       layers.splice(Math.max(1, layers.findIndex(item => item.kind === "character")), 0, layer);
       selected = id; update(); message();
     } catch (error) { message(error.message || "素材读取或保存失败，请重新添加。"); }
@@ -410,9 +464,23 @@
   });
 
   $("#scene-apply").onclick = safely(async () => {
-    await commit();
-    $("#scene-back").click();
-    setImmersive(true);
+    if (!window.desktopPet) {
+      await commit();
+      $("#scene-back").click();
+      setImmersive(true);
+      return;
+    }
+    const control = $("#scene-apply");
+    control.disabled = true;
+    try {
+      await commit();
+      view.state = await api("state");
+      if (view.state.wallpaperShowing) showWallpaperResult(true);
+      else await window.desktopPet.toggleWallpaper();
+      $("#scene-back").click();
+      view.state = await api("state");
+      renderState();
+    } finally { control.disabled = false; }
   });
   document.addEventListener("visibilitychange", () => setVisible(wallpaper || !document.hidden));
   window.sceneLayers = {

@@ -66,11 +66,32 @@ internal static class WallpaperHost
         SetWindowLong(window, -16, (GetWindowLong(window, -16) & ~unchecked((int)0x80000000)) | 0x40000000);
         SetParent(window, target);
         if (GetParent(window) != target) return IntPtr.Zero;
-        POINT origin = new POINT { X = x, Y = y };
-        ScreenToClient(target, ref origin);
-        if (!SetWindowPos(window, insertAfter, origin.X, origin.Y, width, height, 0x10 | 0x20 | 0x40)) return IntPtr.Zero;
+        if (!Place(window, target, insertAfter, x, y, width, height, 0x10 | 0x20 | 0x40)) return IntPtr.Zero;
         if (target == progman) SetWindowPos(sibling, window, 0, 0, 0, 0, 0x01 | 0x02 | 0x10);
         return target;
+    }
+
+    private static bool Place(IntPtr window, IntPtr parent, IntPtr after, int x, int y, int width, int height, uint flags)
+    {
+        POINT origin = new POINT { X = x, Y = y };
+        return ScreenToClient(parent, ref origin)
+            && SetWindowPos(window, after, origin.X, origin.Y, width, height, flags);
+    }
+
+    private static void Listen(IntPtr window, IntPtr parent)
+    {
+        string command;
+        while ((command = Console.ReadLine()) != null)
+        {
+            string[] parts = command.Split(' ');
+            int x, y, width, height;
+            if (parts.Length == 5 && parts[0] == "bounds" &&
+                int.TryParse(parts[1], out x) && int.TryParse(parts[2], out y) &&
+                int.TryParse(parts[3], out width) && int.TryParse(parts[4], out height) &&
+                width > 0 && height > 0)
+                Place(window, parent, IntPtr.Zero, x, y, width, height, 0x04 | 0x10);
+        }
+        Volatile.Write(ref stopping, true);
     }
 
     private static bool DesktopActive()
@@ -135,7 +156,7 @@ internal static class WallpaperHost
         if (parent == IntPtr.Zero || !SetLayeredWindowAttributes(window, 0, 255, 2)) return 3;
         Console.WriteLine("ready");
         lastDown = (GetAsyncKeyState(1) & 0x8000) != 0;
-        new Thread(() => { while (Console.ReadLine() != null) {} Volatile.Write(ref stopping, true); }) { IsBackground = true }.Start();
+        new Thread(() => Listen(window, parent)) { IsBackground = true }.Start();
         while (!Volatile.Read(ref stopping) && IsWindow(window) && IsWindow(parent))
         {
             PollPointer(window);

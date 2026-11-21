@@ -27,6 +27,7 @@ HERE = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resol
 WEB = Path(os.environ.get("BANDORILOVE_WEB_DIR", HERE / "web"))
 PORT = 25000
 KINDS = ("action", "expression", "costume", "voice")
+LOOP_INTERVALS = {"costume": 35, "voice": 22, "expression": 16, "action": 12}
 
 
 def read(path):
@@ -77,11 +78,11 @@ class Studio:
         self.current = None
         self.library = DesktopLibrary(HERE)
         self.model_record = None
-        self.jobs = {kind: 0 for kind in ("action", "voice", "costume")}
+        self.jobs = {kind: 0 for kind in LOOP_INTERVALS}
         self.looping = {kind: False for kind in self.jobs}
         self.cursors = {}
         self.timers = {}
-        self.costume_due = False
+        self.repeat_at = {}
         self.playing = {}
 
     def import_role(self, source, length):
@@ -183,7 +184,7 @@ class Studio:
             self.timers.clear()
             self.cursors.clear()
             self.playing.clear()
-            self.costume_due = False
+            self.repeat_at.clear()
             self.current = role["id"]
             self.model_record = record
             self.roles = {self.current: role}
@@ -220,7 +221,7 @@ class Studio:
         for key, default in (("costume", 1), ("captions", True), ("bodyOnly", False),
                              ("preventClickThrough", True),
                              ("performanceEnabled", False),
-                             ("actionScope", 0), ("voiceScope", 0), ("costumeScope", 0)):
+                             ("actionScope", 0), ("voiceScope", 0), ("costumeScope", 0), ("expressionScope", 0)):
             settings.setdefault(key, default)
             if key != "costume" and settings[key] not in (True, False, 0, 1):
                 settings[key] = default
@@ -229,11 +230,15 @@ class Studio:
         for key in ("favorites",):
             values = settings.get(key, [])
             settings[key] = list(dict.fromkeys(value for value in values if isinstance(value, str))) if isinstance(values, list) else []
-        for kind, interval in (("action", 12), ("voice", 2.5), ("costume", 15)):
+        if "expressionInterval" not in settings:
+            for kind, old_default in (("voice", 2.5), ("costume", 15)):
+                if settings.get(kind + "Interval") == old_default:
+                    settings[kind + "Interval"] = LOOP_INTERVALS[kind]
+        for kind, interval in LOOP_INTERVALS.items():
             if settings.get(kind + "Order") not in ("random", "sequence"):
                 settings[kind + "Order"] = "random"
             value = settings.get(kind + "Interval")
-            minimum = 1 if kind == "costume" else 0
+            minimum = 1 if kind in ("costume", "expression") else 0
             if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= 3600:
                 settings[kind + "Interval"] = interval
         valid = {costume["id"] for costume in self.catalog(role_id)["costumes"]}
@@ -270,7 +275,6 @@ class Studio:
             "looping": self.looping.copy(),
             "playing": self.playing.copy(),
             "sequence": self.sequence,
-            "waitingForCostume": self.costume_due,
         }
 
     def desktop_state(self, data):
@@ -344,14 +348,10 @@ class Studio:
         timer = self.timers.pop(kind, None)
         if timer:
             timer.cancel()
+        self.repeat_at.pop(kind, None)
         self.looping[kind] = False
-        resume = kind == "costume" and self.costume_due
-        if kind == "costume":
-            self.costume_due = False
         self.playing.pop(kind, None)
         self.emit("stop", kind)
-        if resume:
-            self.resume_playback_loops(only_paused=True)
 
 
     def select(self, role_id, costume_id=None, from_loop=False):
@@ -365,17 +365,15 @@ class Studio:
         if role_id == self.current and (
             costume_id is None or costume_id == self.settings()["costume"]
         ):
-            if from_loop:
-                self.resume_playback_loops(only_paused=True)
             return self.snapshot()
         if not from_loop:
-            self.costume_due = False
             self.stop("costume")
-        for kind in ("action", "voice"):
-            self.jobs[kind] += 1
-            timer = self.timers.pop(kind, None)
-            if timer:
-                timer.cancel()
+        for kind in ("action", "voice", "expression"):
+            if not self.looping[kind]:
+                self.jobs[kind] += 1
+                timer = self.timers.pop(kind, None)
+                if timer:
+                    timer.cancel()
             self.playing.pop(kind, None)
             self.emit("stop", kind)
         self.current = role_id
@@ -383,23 +381,7 @@ class Studio:
             self.settings()["costume"] = costume_id
         self.save()
         self.emit("selection")
-        self.resume_playback_loops()
         return self.snapshot()
-
-
-    def resume_playback_loops(self, only_paused=False):
-        for kind in ("action", "voice"):
-            if self.looping[kind] and (not only_paused or kind not in self.playing):
-                try:
-                    self.operate(kind, loop=True, randomize=True)
-                except (ValueError, ConnectionError):
-                    self.stop(kind)
-                    self.emit(
-                        "notice",
-                        "当前衣装的循环范围为空，已停止"
-                        + ("动作" if kind == "action" else "语音")
-                        + "循环",
-                    )
 
 
     def entries(self, kind, costume=None):
@@ -443,14 +425,14 @@ class Studio:
             self.save()
             self.emit("settings")
             return self.snapshot()
-        switches = {"captions", "bodyOnly", "actionScope", "voiceScope", "costumeScope", "preventClickThrough", "performanceEnabled"}
+        switches = {"captions", "bodyOnly", "actionScope", "voiceScope", "costumeScope", "expressionScope", "preventClickThrough", "performanceEnabled"}
         orders = {kind + "Order" for kind in self.jobs}
         intervals = {kind + "Interval" for kind in self.jobs}
         if key in orders:
             if value not in ("random", "sequence"):
                 raise ValueError("播放顺序无效")
         elif key in intervals:
-            minimum = 1 if key == "costumeInterval" else 0
+            minimum = 1 if key in ("costumeInterval", "expressionInterval") else 0
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
@@ -464,26 +446,10 @@ class Studio:
         if key in intervals:
             kind = key.removesuffix("Interval")
             if self.looping[kind]:
-                if kind == "costume" and self.costume_due:
-                    self.costume_due = False
-                    self.resume_playback_loops()
                 self.jobs[kind] += 1
                 playing = self.playing.get(kind, {})
-                item = next(
-                    (
-                        entry
-                        for entry in self.entries(kind)
-                        if entry["id"] == playing.get("id")
-                    ),
-                    {},
-                )
                 elapsed = time.time() - playing.get("startedAt", time.time())
-                remaining = max(
-                    0,
-                    value
-                    + (0 if kind == "costume" else item.get("duration", 0))
-                    - elapsed,
-                )
+                remaining = max(0, value + playing.get("duration", 0) - elapsed)
                 self.schedule(kind, remaining, self.repeat, self.jobs[kind])
         self.save()
         self.emit("settings")
@@ -557,23 +523,67 @@ class Studio:
         settings = self.settings()
         if not settings["performanceEnabled"]:
             return self.operate("action", randomize=True, body=True, direction="body")
-        groups = self.outfit_performances(outfit)
-        if not groups:
-            return self.snapshot()
-        key = ("performance", role, outfit)
+        show = self.next_performance(costume)
+        if show:
+            self.play_performance(costume, show)
+        return self.snapshot()
+
+
+    def next_performance(self, costume):
+        groups = self.outfit_performances(costume.get("flag"))
+        key = ("performance", self.current, costume.get("flag"))
         last = self.cursors.get(key)
         index = next((i for i, group in enumerate(groups) if group["id"] == last), -1)
-        group = groups[(index + 1) % len(groups)]
-        self.cursors[key] = group["id"]
-        try:
-            tracks = self.performance_tracks(costume, group["tracks"])
-        except ValueError:
-            return self.snapshot()
-        if tracks:
-            self.reset()
-            for kind, item in tracks.items():
-                self.operate(kind, item["id"], notify=False)
-            self.emit("performance", {"costume": costume["id"], "tracks": tracks})
+        for group in groups[index + 1:] + groups[:index + 1]:
+            try:
+                tracks = self.performance_tracks(costume, group["tracks"])
+            except ValueError:
+                continue
+            if tracks:
+                return key, group["id"], tracks
+        return None
+
+
+    def play_performance(self, costume, show):
+        key, group_id, tracks = show
+        self.cursors[key] = group_id
+        for kind, item in tracks.items():
+            duration = item.get("duration", 4) if kind in ("action", "voice") else 0
+            self.playing[kind] = {"id": item["id"], "name": item["name"],
+                                  "startedAt": time.time(), "duration": duration}
+            if not self.looping[kind] and kind in ("action", "voice"):
+                self.jobs[kind] += 1
+                self.schedule(kind, duration, self.finish, self.jobs[kind])
+        self.emit("performance", {"costume": costume["id"], "tracks": tracks})
+
+
+    def playback_remaining(self, kind):
+        playing = self.playing.get(kind)
+        if playing:
+            return max(0, playing.get("duration", 0) - (time.time() - playing["startedAt"]))
+        return 0
+
+
+    def loop_performance(self):
+        costume = self.costume()
+        show = self.next_performance(costume)
+        self.jobs["action"] += 1
+        self.looping["action"] = True
+        interval = self.settings()["actionInterval"]
+        if show:
+            tracks = show[2]
+            voice_remaining = self.playback_remaining("voice") if "voice" in tracks else 0
+            if voice_remaining:
+                delay = voice_remaining + 0.05
+                self.emit("loop")
+            else:
+                self.play_performance(costume, show)
+                delay = max(1, interval + tracks.get("action", {}).get("duration", 0),
+                            tracks.get("voice", {}).get("duration", 0) + 0.6)
+        else:
+            delay = max(1, interval)
+            self.emit("loop")
+        self.schedule("action", delay, self.repeat, self.jobs["action"])
         return self.snapshot()
 
 
@@ -585,7 +595,6 @@ class Studio:
         randomize=False,
         body=False,
         direction=None,
-        notify=True,
     ):
         if kind not in KINDS:
             raise ValueError("操作类型无效")
@@ -593,6 +602,8 @@ class Studio:
             self.playing.pop("expression", None)
             self.emit("clear-expression")
             return self.snapshot()
+        if kind == "action" and loop and randomize and self.settings()["performanceEnabled"]:
+            return self.loop_performance()
         entries = self.entries(kind)
         if body and kind == "action":
             categories = {entry["category"] for entry in entries}
@@ -631,7 +642,7 @@ class Studio:
                     "当前范围为空，请先添加❤收藏" if only else "当前没有可播放的内容"
                 )
             if loop and self.settings()[kind + "Order"] == "sequence":
-                cursor_key = (kind, self.costume()["id"] if kind == "action" else 0)
+                cursor_key = (kind, self.costume()["id"] if kind != "costume" else 0)
                 last_id = self.cursors.get(cursor_key, -1)
                 item = next(
                     (entry for entry in entries if entry["id"] > last_id), entries[0]
@@ -657,20 +668,19 @@ class Studio:
             )
             self.emit("loop")
             return self.snapshot()
-        if kind in self.jobs:
-            self.jobs[kind] += 1
-            generation = self.jobs[kind]
-            self.looping[kind] = bool(loop)
-        else:
-            generation = 0
+        self.jobs[kind] += 1
+        generation = self.jobs[kind]
+        self.looping[kind] = bool(loop)
         if kind == "costume":
             self.select(self.current, item["id"], from_loop=loop)
+        duration = item.get("duration", 4) if kind in ("action", "voice") else 0
         self.playing[kind] = {
             "id": item["id"],
             "startedAt": time.time(),
             "name": item["name"],
+            "duration": duration,
         }
-        if notify and kind != "costume":
+        if kind != "costume":
             self.emit(
                 "play",
                 {
@@ -681,12 +691,14 @@ class Studio:
                 },
             )
         if loop:
-            duration = self.settings()[kind + "Interval"] + (
-                0 if kind == "costume" else item.get("duration", 4)
-            )
-            self.schedule(kind, duration, self.repeat, generation)
-        elif kind in self.jobs:
-            self.schedule(kind, item.get("duration", 4), self.finish, generation)
+            self.schedule(kind, duration + self.settings()[kind + "Interval"], self.repeat, generation)
+        elif kind in ("action", "voice"):
+            self.schedule(kind, duration, self.finish, generation)
+        else:
+            self.repeat_at.pop(kind, None)
+            previous = self.timers.pop(kind, None)
+            if previous:
+                previous.cancel()
         return self.snapshot()
 
 
@@ -694,6 +706,10 @@ class Studio:
         previous = self.timers.pop(kind, None)
         if previous:
             previous.cancel()
+        if callback == self.repeat:
+            self.repeat_at[kind] = (time.monotonic() + delay, generation)
+        else:
+            self.repeat_at.pop(kind, None)
         timer = threading.Timer(delay, callback, args=(kind, generation))
         timer.daemon = True
         self.timers[kind] = timer
@@ -701,7 +717,6 @@ class Studio:
 
 
     def reset(self):
-        self.costume_due = False
         for kind in self.jobs:
             self.stop(kind)
         self.operate("expression", item_id=-1)
@@ -714,66 +729,36 @@ class Studio:
         with self.lock:
             if self.jobs[kind] != generation:
                 return
+            self.timers.pop(kind, None)
             self.playing.pop(kind, None)
             self.emit("ended", kind)
 
 
     def repeat(self, kind, generation):
         with self.lock:
-            if self.jobs[kind] != generation or not self.looping[kind]:
+            scheduled = self.repeat_at.get(kind)
+            if not scheduled or scheduled[1] != generation or self.jobs[kind] != generation:
                 return
-            if kind != "costume" and self.costume_due:
-                self.playing.pop(kind, None)
-                self.emit("ended", kind)
-                return
-            if kind == "costume":
-                pool = [
-                    item
-                    for item in self.entries(kind)
-                    if not self.settings()["costumeScope"]
-                    or item["flag"] in self.settings()["favorites"]
-                ]
-                if pool and all(
-                    item["id"] == self.settings()["costume"] for item in pool
-                ):
-                    self.costume_due = False
-                    self.resume_playback_loops(only_paused=True)
-                    self.schedule(
-                        kind,
-                        self.settings()["costumeInterval"],
-                        self.repeat,
-                        generation,
-                    )
-                    return
-                self.costume_due = True
-                remaining = 0
-                for playing_kind in ("action", "voice"):
-                    playing = self.playing.get(playing_kind)
-                    if not playing:
-                        continue
-                    item = next(
-                        (
-                            entry
-                            for entry in self.entries(playing_kind)
-                            if entry["id"] == playing["id"]
-                        ),
-                        {},
-                    )
-                    remaining = max(
-                        remaining,
-                        item.get("duration", 0) - (time.time() - playing["startedAt"]),
-                    )
-                if remaining > 0:
-                    self.schedule(kind, remaining + 0.05, self.repeat, generation)
-                    self.emit("waiting")
-                    return
-                self.costume_due = False
-            try:
-                self.operate(kind, loop=True, randomize=True)
-            except (ValueError, ConnectionError):
-                self.stop(kind)
-                if kind == "costume":
-                    self.resume_playback_loops(only_paused=True)
+            now = time.monotonic()
+            # Take due tracks in order while the same lock protects costume selection.
+            for track in LOOP_INTERVALS:
+                pending = self.repeat_at.get(track)
+                if not pending or pending[0] > now + 0.04:
+                    continue
+                voice_remaining = self.playback_remaining("voice") if track == "voice" else 0
+                if voice_remaining > 0.01:
+                    self.jobs[track] += 1
+                    self.schedule(track, voice_remaining + 0.05, self.repeat, self.jobs[track])
+                    continue
+                self.repeat_at.pop(track)
+                timer = self.timers.pop(track, None)
+                if timer:
+                    timer.cancel()
+                try:
+                    self.operate(track, loop=True, randomize=True)
+                except (ValueError, ConnectionError) as error:
+                    self.stop(track)
+                    self.emit("notice", str(error))
 
 
     def preview(self, role_id, costume_id):

@@ -47,8 +47,8 @@ def portable_layers(layers):
             raise ValueError("图层格式无效")
         ids.add(layer_id)
         clean = {"id": layer_id, "kind": kind, "name": str(layer.get("name", ""))[:150], "visible": layer.get("visible") is True}
-        for key, lower, upper in (("opacity", 0, 1), ("scale", .3, 3), ("x", -.8, .8), ("y", -.8, .8)):
-            value = layer.get(key)
+        for key, lower, upper in (("opacity", 0, 1), ("scale", .3, 3), ("x", -.8, .8), ("y", -.8, .8), ("rotation", -180, 180)):
+            value = layer.get(key, 0) if key == "rotation" else layer.get(key)
             if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
                 raise ValueError("图层参数无效")
             clean[key] = value
